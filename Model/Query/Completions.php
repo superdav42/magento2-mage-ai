@@ -267,7 +267,7 @@ class Completions
         $this->setOpenAIHeaders();
         $model = $this->helper->getModel();
         $endpoint = strpos($model, 'gpt') !== false ? '/v1/chat/completions' : '/v1/completions';
-        $this->curl->post($this->helper->getApiBaseUrl() . $endpoint, $payload);
+        $this->curl->post($this->helper->getOpenAIEndpointUrl($endpoint), $payload);
         return $this->validateOpenAIResponse();
     }
 

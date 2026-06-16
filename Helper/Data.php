@@ -31,6 +31,7 @@ class Data extends AbstractHelper
     public const XML_PATH_API_BASE_URL = 'mageai/api/base_url';
     public const XML_PATH_API_KEY = 'mageai/api/api_secret';
     public const XML_PATH_API_MODEL = 'mageai/api/model';
+    public const XML_PATH_API_CUSTOM_MODEL = 'mageai/api/custom_model';
     public const XML_PATH_ANTHROPIC_BASE_URL = 'mageai/api/anthropic_base_url';
     public const XML_PATH_ANTHROPIC_API_KEY = 'mageai/api/anthropic_api_secret';
     public const XML_PATH_ANTHROPIC_MODEL = 'mageai/api/anthropic_model';
@@ -50,6 +51,8 @@ class Data extends AbstractHelper
     public const XML_PATH_GPT_IMAGE_SIZE = 'mageai/image_generation/gpt_image_size';
     public const XML_PATH_GPT_IMAGE_QUALITY = 'mageai/image_generation/gpt_image_quality';
     public const XML_PATH_GEMINI_IMAGE_MODEL = 'mageai/image_generation/gemini_image_model';
+    public const XML_PATH_IMAGE_ANALYSIS_PROMPT = 'mageai/product_image_analysis/prompt';
+    public const XML_PATH_IMAGE_ANALYSIS_MAX_TOKENS = 'mageai/product_image_analysis/max_tokens';
 
     /**
      * Get config value
@@ -105,6 +108,33 @@ class Data extends AbstractHelper
     }
 
     /**
+     * Build an OpenAI-compatible endpoint URL from the configured base URL.
+     *
+     * Merchants commonly enter either "https://host" or "https://host/v1".
+     * This method supports both so OpenAI-compatible providers do not get a
+     * duplicated /v1 segment.
+     *
+     * @param string $path Endpoint path, with or without a leading /v1
+     * @return string
+     */
+    public function getOpenAIEndpointUrl(string $path): string
+    {
+        $baseUrl = rtrim((string) $this->getApiBaseUrl(), '/');
+        $path = '/' . ltrim($path, '/');
+
+        if (substr($path, 0, 4) === '/v1/') {
+            $pathWithoutVersion = substr($path, 3);
+        } else {
+            $pathWithoutVersion = $path;
+            $path = '/v1' . $path;
+        }
+
+        return substr($baseUrl, -3) === '/v1'
+            ? $baseUrl . $pathWithoutVersion
+            : $baseUrl . $path;
+    }
+
+    /**
      * Get OpenAI API secret
      *
      * @return string
@@ -121,7 +151,8 @@ class Data extends AbstractHelper
      */
     public function getModel()
     {
-        return $this->getConfig(self::XML_PATH_API_MODEL);
+        $customModel = trim((string) $this->getConfig(self::XML_PATH_API_CUSTOM_MODEL));
+        return $customModel !== '' ? $customModel : $this->getConfig(self::XML_PATH_API_MODEL);
     }
 
     /**
@@ -310,5 +341,25 @@ class Data extends AbstractHelper
     public function getGeminiImageModel(): string
     {
         return (string) ($this->getConfig(self::XML_PATH_GEMINI_IMAGE_MODEL) ?: 'gemini-2.5-flash-image');
+    }
+
+    /**
+     * Get prompt used to analyze an existing product image into catalog metadata.
+     *
+     * @return string
+     */
+    public function getProductImageAnalysisPrompt(): string
+    {
+        return (string) ($this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_PROMPT) ?: '');
+    }
+
+    /**
+     * Get max tokens for product image metadata analysis.
+     *
+     * @return int
+     */
+    public function getProductImageAnalysisMaxTokens(): int
+    {
+        return (int) ($this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_MAX_TOKENS) ?: 1200);
     }
 }

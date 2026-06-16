@@ -9,6 +9,8 @@ This Magento 2 extension integrates **OpenAI (GPT)**, **Anthropic (Claude)**, an
 - **AI product image editing** — pick any existing product image, describe the change in a prompt (or use a configurable default), preview the edited result side-by-side with the original, and replace it in the gallery on confirm (OpenAI & Gemini)
 - **Global baseline prompt** — set brand voice, language, compliance and SEO rules once and have them automatically applied to every text generation (full, short, and custom prompts) across all providers
 - Generate product descriptions using a **custom free-form prompt** for full control and flexibility
+- Generate product title, description, primary keywords, secondary keywords, and tertiary keywords from an AI analysis of the existing product image
+- Batch-run product image metadata generation from the Magento CLI
 - Customize prompt templates using `{{ product.name }}` and `{{ product.attributes }}` variables
 - Select **multiple product attributes** to base generation on (name, material, features, etc.)
 - Configure **max tokens** and **temperature** separately for full and short descriptions
@@ -53,6 +55,26 @@ Click **"Generate Image with MageAI"** next to the **Add Video** button in the I
 
 ### Edit Product Image
 Click **"Edit Image with MageAI"** (next to the generate button) to open a popup listing the product's current images. Click **"Edit with MageAI"** under any image, describe the change in a prompt (or leave it empty to use the default configured modify prompt), and the AI returns an edited version shown side-by-side with the original. Click **Confirm & Replace** to swap the original image with the edited one — its base/role, position, and visibility are preserved, and the change is saved with the product. Available with the **OpenAI** and **Gemini** providers.
+
+### Generate Product Metadata From Images
+
+The CLI command analyzes each product's existing image through the configured OpenAI-compatible chat completions endpoint and writes:
+
+- `name` — generated product title, when the current title is empty or still matches the SKU
+- `description` — generated product description, when empty
+- `keywords` — primary keyword options
+- `secondary_keywords` — secondary keyword options
+- `tertiary_keywords` — tertiary keyword options
+
+```bash
+php bin/magento mageai:generate:image-metadata --limit=25
+php bin/magento mageai:generate:image-metadata --sku=ABC123 --dry-run
+php bin/magento mageai:generate:image-metadata --product-id=123 --force
+```
+
+By default the command processes product type `image`, skips products whose description and all three keyword tiers are already populated, and does not overwrite non-placeholder titles. Use `--force` to overwrite existing metadata.
+
+For OpenAI-compatible providers, set **Stores > Configuration > Mageprince > MageAI > API Configuration > Base URL** to either the provider root URL or its `/v1` URL. Use **Custom OpenAI-Compatible Model** when the provider's model ID is not in the built-in dropdown.
 
 ### Prompt Templates
 Description and image prompts support two variables:
@@ -106,4 +128,3 @@ You're very welcome to join in.
 
 ### Generate Product Long Description With Page Builder
 ![full-description-short](https://github.com/user-attachments/assets/54031479-5d68-4af9-9fc1-c24680e4a858)
-

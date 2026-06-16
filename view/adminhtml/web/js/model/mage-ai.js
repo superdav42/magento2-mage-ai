@@ -9,6 +9,7 @@ define([
         options: {
             generateBtnSelector: '.generate-mageai-btn',
             advancedGenerateBtnSelector: '.advanced-generate-mageai-btn',
+            imageMetadataBtnSelector: '#mp-mageai-image-metadata-btn',
             advancedGenerateModalSelector: '#advanced-generate-modal',
             promptGenerateTextAreaSelector: '#mp-custom-prompt',
             shortDescriptionFieldIdentifier: 'product_form_short_description_mageai'
@@ -37,6 +38,32 @@ define([
 
             modal(modalOptions, $(this.options.advancedGenerateModalSelector));
             $(this.options.advancedGenerateModalSelector).modal('openModal');
+        },
+
+        /**
+         * Adds a product-edit button for regenerating metadata from the saved image.
+         */
+        addImageMetadataButton: function () {
+            var $target;
+
+            if ($(this.options.imageMetadataBtnSelector).length) {
+                return;
+            }
+
+            $target = $('.page-actions .page-actions-buttons').first();
+            if (!$target.length) {
+                $target = $('.page-actions').first();
+            }
+            if (!$target.length) {
+                return;
+            }
+
+            $('<button/>', {
+                type: 'button',
+                id: this.options.imageMetadataBtnSelector.replace('#', ''),
+                class: 'action-default scalable action-secondary',
+                text: $.mage.__('Regenerate Title, Description & Keywords from Image')
+            }).appendTo($target);
         },
 
         /**
@@ -216,6 +243,142 @@ define([
             });
 
             return deferred.promise();
+        },
+
+        /**
+         * Reads the current product ID from form data or the edit URL.
+         *
+         * @returns {Number}
+         */
+        getCurrentProductId: function () {
+            var id = $('[name="product[id]"]').val() || $('[name="id"]').val();
+            var match;
+
+            if (!id) {
+                match = window.location.pathname.match(/\/id\/(\d+)/);
+                id = match ? match[1] : 0;
+            }
+
+            return parseInt(id, 10) || 0;
+        },
+
+        /**
+         * Generates product title, description and keyword tiers from the saved image.
+         *
+         * @returns {jQuery.Deferred}
+         */
+        generateImageMetadata: function () {
+            var deferred = $.Deferred();
+            var productId = this.getCurrentProductId();
+
+            if (!productId) {
+                alert({
+                    title: $.mage.__('Save Product First'),
+                    content: $.mage.__('Please save the product before regenerating metadata from its image.')
+                });
+                deferred.resolve(false);
+                return deferred.promise();
+            }
+
+            $.ajax({
+                url: window.mageAIAnalyzeImageUrl,
+                type: 'POST',
+                showLoader: true,
+                data: {
+                    'form_key': FORM_KEY,
+                    'product_id': productId
+                },
+                success: function (response) {
+                    if (response.error == false) {
+                        mageAI.applyImageMetadata(response.data || {});
+                        deferred.resolve(response.data || {});
+                    } else {
+                        alert({
+                            title: $.mage.__('Image Metadata Error'),
+                            content: response.data
+                        });
+                        deferred.resolve(false);
+                    }
+                },
+                error: function (XMLHttpRequest, textStatus, errorThrown) {
+                    console.log(errorThrown);
+                    deferred.reject(errorThrown);
+                }
+            });
+
+            return deferred.promise();
+        },
+
+        /**
+         * Applies generated image metadata to the product edit form.
+         *
+         * @param {Object} data
+         */
+        applyImageMetadata: function (data) {
+            if (data.title) {
+                $('[name="product[name]"]').val(data.title).trigger('change');
+            }
+
+            if (data.description) {
+                this.setHtmlField('description', data.description);
+            }
+
+            $.each(data.keyword_options || {}, function (attributeCode, options) {
+                mageAI.setMultiselectOptions(attributeCode, options, (data.keywords || {})[attributeCode] || []);
+            });
+
+            alert({
+                title: $.mage.__('MageAI Metadata Generated'),
+                content: $.mage.__('Title, description, and keyword fields were updated. Review and save the product to keep the changes.')
+            });
+        },
+
+        /**
+         * Updates a WYSIWYG/textarea HTML product field.
+         *
+         * @param {String} code
+         * @param {String} value
+         */
+        setHtmlField: function (code, value) {
+            var fieldId = 'product_form_' + code;
+            var $textarea = $('#' + fieldId + ', [name="product[' + code + ']"]').first();
+
+            if (typeof tinymce !== 'undefined' && tinymce.get(fieldId)) {
+                tinymce.get(fieldId).setContent(value);
+            }
+
+            if ($textarea.length) {
+                $textarea.val(value).trigger('change');
+            }
+        },
+
+        /**
+         * Ensures option elements exist, then selects generated multiselect values.
+         *
+         * @param {String} attributeCode
+         * @param {Array} options
+         * @param {Array} values
+         */
+        setMultiselectOptions: function (attributeCode, options, values) {
+            var $field = $('[name="product[' + attributeCode + '][]"], [name="product[' + attributeCode + ']"]').first();
+
+            if (!$field.length) {
+                return;
+            }
+
+            $.each(options || [], function (i, option) {
+                var id = String(option.id);
+                if (!$field.find('option[value="' + id.replace(/"/g, '\\"') + '"]').length) {
+                    $field.append($('<option/>', {
+                        value: id,
+                        text: option.label
+                    }));
+                }
+            });
+
+            $field.val($.map(values || [], function (value) {
+                return String(value);
+            })).trigger('change');
         }
     };
 
