@@ -1,8 +1,9 @@
 define([
     'jquery',
     'Magento_Ui/js/modal/alert',
-    'Magento_Ui/js/modal/modal'
-], function ($, alert, modal) {
+    'Magento_Ui/js/modal/modal',
+    'uiRegistry'
+], function ($, alert, modal, registry) {
     'use strict';
 
     var mageAI = {
@@ -335,8 +336,14 @@ define([
          */
         setAttributeField: function (code, value) {
             var $field = $('[name="product[' + code + '][]"], [name="product[' + code + ']"]').first();
+            var component;
 
             if (!$field.length) {
+                component = this.getUiComponent(code);
+                if (component && typeof component.value === 'function') {
+                    component.value($.isArray(value) ? $.map(value, String) : String(value));
+                    return;
+                }
                 this.setHtmlField(code, value);
                 return;
             }
@@ -383,6 +390,11 @@ define([
          */
         setAttributeOptions: function (attributeCode, options) {
             var $field = $('[name="product[' + attributeCode + '][]"], [name="product[' + attributeCode + ']"]').first();
+            var component = this.getUiComponent(attributeCode);
+
+            if (component && typeof component.options === 'function') {
+                this.setUiComponentOptions(component, options);
+            }
 
             if (!$field.length) {
                 return;
@@ -397,6 +409,47 @@ define([
                     }));
                 }
             });
+        },
+
+        /**
+         * Resolve a Magento UI component by product attribute code.
+         *
+         * @param {String} attributeCode
+         * @returns {Object|null}
+         */
+        getUiComponent: function (attributeCode) {
+            return registry.get('index = ' + attributeCode) || null;
+        },
+
+        /**
+         * Ensures generated options exist on a Magento UI select/multiselect component.
+         *
+         * @param {Object} component
+         * @param {Array} options
+         */
+        setUiComponentOptions: function (component, options) {
+            var currentOptions = component.options() || [];
+            var existing = {};
+
+            $.each(currentOptions, function (i, option) {
+                existing[String(option.value)] = true;
+            });
+
+            $.each(options || [], function (i, option) {
+                var id = String(option.id);
+                if (!existing[id]) {
+                    currentOptions.push({
+                        value: id,
+                        label: option.label,
+                        '__disableTmpl': true,
+                        level: 0,
+                        path: ''
+                    });
+                    existing[id] = true;
+                }
+            });
+
+            component.options(currentOptions);
         }
     };
 
