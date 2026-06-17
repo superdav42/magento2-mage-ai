@@ -94,7 +94,7 @@ class ImageAnalyzer
      */
     private function buildPayload(ProductInterface $product, string $imageData, string $mimeType): string
     {
-        $targetAttributes = $this->helper->getProductImageAnalysisAttributes();
+        $targetAttributes = $this->helper->getProductImageAnalysisAttributeConfig();
         $prompt = $this->buildPrompt($product, $targetAttributes);
 
         return $this->json->serialize([
@@ -180,7 +180,7 @@ class ImageAnalyzer
      * Build full user prompt including target instructions and existing values.
      *
      * @param ProductInterface $product
-     * @param array<string, string> $targetAttributes
+     * @param array<string, array{attribute: string, instruction: string, policy: string, allow_new_options: bool}> $targetAttributes
      * @return string
      */
     private function buildPrompt(ProductInterface $product, array $targetAttributes): string
@@ -190,14 +190,17 @@ class ImageAnalyzer
         $lines[] = '';
         $lines[] = 'Target attributes to generate:';
 
-        foreach ($targetAttributes as $code => $instruction) {
+        foreach ($targetAttributes as $code => $config) {
             $attribute = $this->getAttribute($code);
+            $optionInstruction = $this->getOptionPromptInstruction($attribute, (bool) $config['allow_new_options']);
             $lines[] = sprintf(
-                '- %s (%s, input: %s): %s',
+                '- %s (%s, input: %s, policy: %s): %s%s',
                 $code,
                 $attribute ? (string) $attribute->getDefaultFrontendLabel() : $code,
                 $attribute ? (string) $attribute->getFrontendInput() : 'text',
-                $instruction
+                $config['policy'],
+                $config['instruction'],
+                $optionInstruction
             );
         }
 
@@ -205,7 +208,7 @@ class ImageAnalyzer
         $lines[] = 'Existing product context. Use these values when helpful, especially when generating one blank field from other populated fields:';
         $lines[] = '- sku: ' . (string) $product->getSku();
 
-        foreach ($targetAttributes as $code => $instruction) {
+        foreach ($targetAttributes as $code => $config) {
             $lines[] = sprintf('- current %s: %s', $code, $this->getProductAttributeText($product, $code));
         }
 
@@ -215,7 +218,7 @@ class ImageAnalyzer
     /**
      * Build JSON schema for configured target attributes.
      *
-     * @param array<string, string> $targetAttributes
+     * @param array<string, array{attribute: string, instruction: string, policy: string, allow_new_options: bool}> $targetAttributes
      * @return array<string, mixed>
      */
     private function buildResponseSchema(array $targetAttributes): array
@@ -223,24 +226,32 @@ class ImageAnalyzer
         $properties = [];
         $required = [];
 
-        foreach ($targetAttributes as $code => $instruction) {
+        foreach ($targetAttributes as $code => $config) {
             $attribute = $this->getAttribute($code);
             $input = $attribute ? (string) $attribute->getFrontendInput() : 'text';
+            $enum = $attribute && !$config['allow_new_options'] ? $this->getOptionLabels($attribute) : [];
             $required[] = $code;
 
             if ($input === 'multiselect') {
+                $items = ['type' => 'string'];
+                if (!empty($enum) && count($enum) <= 200) {
+                    $items['enum'] = $enum;
+                }
                 $properties[$code] = [
                     'type' => 'array',
-                    'description' => $instruction,
-                    'items' => ['type' => 'string'],
+                    'description' => $config['instruction'],
+                    'items' => $items,
                 ];
                 continue;
             }
 
             $properties[$code] = [
                 'type' => 'string',
-                'description' => $instruction,
+                'description' => $config['instruction'],
             ];
+            if ($input === 'select' && !empty($enum) && count($enum) <= 200) {
+                $properties[$code]['enum'] = $enum;
+            }
         }
 
         return [
@@ -296,6 +307,65 @@ class ImageAnalyzer
         } catch (\Exception $e) {
             return null;
         }
+    }
+
+    /**
+     * Build option-specific prompt instructions for select and multiselect fields.
+     *
+     * @param mixed $attribute
+     * @param bool $allowNewOptions
+     * @return string
+     */
+    private function getOptionPromptInstruction($attribute, bool $allowNewOptions): string
+    {
+        if (!$attribute) {
+            return '';
+        }
+
+        $input = (string) $attribute->getFrontendInput();
+        if ($input !== 'select' && $input !== 'multiselect') {
+            return '';
+        }
+
+        if ($allowNewOptions) {
+            return ' You may return concise new option labels when the existing options do not cover the image.';
+        }
+
+        $labels = $this->getOptionLabels($attribute);
+        if (empty($labels)) {
+            return ' Choose only an existing option label; do not invent a new option.';
+        }
+
+        return ' Choose only from these existing option labels: ' . implode(', ', array_slice($labels, 0, 200)) . '.';
+    }
+
+    /**
+     * Get non-empty option labels for an attribute.
+     *
+     * @param mixed $attribute
+     * @return string[]
+     */
+    private function getOptionLabels($attribute): array
+    {
+        $input = (string) $attribute->getFrontendInput();
+        if ($input !== 'select' && $input !== 'multiselect') {
+            return [];
+        }
+
+        $labels = [];
+        try {
+            foreach ($attribute->getSource()->getAllOptions(false, false) as $option) {
+                $label = trim((string) ($option['label'] ?? ''));
+                if ($label !== '') {
+                    $labels[$label] = $label;
+                }
+            }
+        } catch (\Exception $e) {
+            return [];
+        }
+
+        natcasesort($labels);
+        return array_values($labels);
     }
 
     /**

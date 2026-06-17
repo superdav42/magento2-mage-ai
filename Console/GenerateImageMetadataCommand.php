@@ -98,7 +98,7 @@ class GenerateImageMetadataCommand extends Command
         $this->setDescription('Generate configured product attributes from product images using an OpenAI-compatible endpoint.');
         $this->addOption(self::OPTION_PRODUCT_ID, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product ID(s) to process.');
         $this->addOption(self::OPTION_SKU, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product SKU(s) to process.');
-        $this->addOption(self::OPTION_LIMIT, null, InputOption::VALUE_OPTIONAL, 'Maximum products to process when no product-id/sku filter is supplied.', 50);
+        $this->addOption(self::OPTION_LIMIT, null, InputOption::VALUE_OPTIONAL, 'Maximum products to process when no product-id/sku filter is supplied. Use 0 for all matched products.', 50);
         $this->addOption(self::OPTION_TYPE, null, InputOption::VALUE_OPTIONAL, 'Product type to process when no product-id/sku filter is supplied. Use empty string for all types.', 'image');
         $this->addOption(self::OPTION_FORCE, 'f', InputOption::VALUE_NONE, 'Overwrite existing configured image-analysis attributes.');
         $this->addOption(self::OPTION_DRY_RUN, null, InputOption::VALUE_NONE, 'Analyze and report changes without saving products or creating attribute options.');
@@ -220,8 +220,10 @@ class GenerateImageMetadataCommand extends Command
             if ($type !== '') {
                 $collection->addFieldToFilter('type_id', $type);
             }
-            $collection->setPageSize(max(1, $limit));
-            $collection->setCurPage(1);
+            if ($limit > 0) {
+                $collection->setPageSize($limit);
+                $collection->setCurPage(1);
+            }
         }
 
         $collection->load();

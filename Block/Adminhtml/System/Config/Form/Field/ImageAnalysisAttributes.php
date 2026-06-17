@@ -20,6 +20,16 @@ class ImageAnalysisAttributes extends AbstractFieldArray
     protected $attributeRenderer;
 
     /**
+     * @var OverwritePolicyColumn|null
+     */
+    protected $policyRenderer;
+
+    /**
+     * @var AllowNewOptionsColumn|null
+     */
+    protected $allowNewOptionsRenderer;
+
+    /**
      * Prepare dynamic row columns.
      *
      * @return void
@@ -35,6 +45,14 @@ class ImageAnalysisAttributes extends AbstractFieldArray
             'class' => 'required-entry',
             'style' => 'width:420px',
         ]);
+        $this->addColumn('policy', [
+            'label' => __('Update Policy'),
+            'renderer' => $this->getPolicyRenderer(),
+        ]);
+        $this->addColumn('allow_new_options', [
+            'label' => __('Create Options'),
+            'renderer' => $this->getAllowNewOptionsRenderer(),
+        ]);
         $this->_addAfter = false;
         $this->_addButtonLabel = __('Add Attribute');
     }
@@ -48,10 +66,18 @@ class ImageAnalysisAttributes extends AbstractFieldArray
     protected function _prepareArrayRow(DataObject $row)
     {
         $attribute = (string) $row->getData('attribute');
+        $policy = (string) $row->getData('policy');
+        $allowNewOptions = (string) $row->getData('allow_new_options');
         $options = [];
 
         if ($attribute !== '') {
             $options['option_' . $this->getAttributeRenderer()->calcOptionHash($attribute)] = 'selected="selected"';
+        }
+        if ($policy !== '') {
+            $options['option_' . $this->getPolicyRenderer()->calcOptionHash($policy)] = 'selected="selected"';
+        }
+        if ($allowNewOptions !== '') {
+            $options['option_' . $this->getAllowNewOptionsRenderer()->calcOptionHash($allowNewOptions)] = 'selected="selected"';
         }
 
         $row->setData('option_extra_attrs', $options);
@@ -73,5 +99,41 @@ class ImageAnalysisAttributes extends AbstractFieldArray
         }
 
         return $this->attributeRenderer;
+    }
+
+    /**
+     * Get overwrite policy select renderer.
+     *
+     * @return OverwritePolicyColumn
+     */
+    private function getPolicyRenderer(): OverwritePolicyColumn
+    {
+        if ($this->policyRenderer === null) {
+            $this->policyRenderer = $this->getLayout()->createBlock(
+                OverwritePolicyColumn::class,
+                '',
+                ['data' => ['is_render_to_js_template' => true]]
+            );
+        }
+
+        return $this->policyRenderer;
+    }
+
+    /**
+     * Get allow-new-options select renderer.
+     *
+     * @return AllowNewOptionsColumn
+     */
+    private function getAllowNewOptionsRenderer(): AllowNewOptionsColumn
+    {
+        if ($this->allowNewOptionsRenderer === null) {
+            $this->allowNewOptionsRenderer = $this->getLayout()->createBlock(
+                AllowNewOptionsColumn::class,
+                '',
+                ['data' => ['is_render_to_js_template' => true]]
+            );
+        }
+
+        return $this->allowNewOptionsRenderer;
     }
 }

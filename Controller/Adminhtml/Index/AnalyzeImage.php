@@ -99,7 +99,7 @@ class AnalyzeImage extends Action implements HttpPostActionInterface
 
             return $this->resultJson->create()->setData([
                 'error' => false,
-                'data' => $this->metadataApplier->buildFormData($metadata),
+                'data' => $this->metadataApplier->buildFormData($product, $metadata),
             ]);
         } catch (QueryException $e) {
             return $this->resultJson->create()->setData(['error' => true, 'data' => $e->getMessage()]);

@@ -63,6 +63,11 @@ class MetadataApplier
     protected $attributeValues = [];
 
     /**
+     * @var array<int|string, array<string, string>>
+     */
+    protected $attributeLabels = [];
+
+    /**
      * @param ProductAttributeRepositoryInterface $attributeRepository
      * @param TableFactory $tableFactory
      * @param AttributeOptionLabelInterfaceFactory $optionLabelFactory
@@ -99,12 +104,15 @@ class MetadataApplier
     {
         $changes = [];
 
-        foreach ($this->helper->getProductImageAnalysisAttributes() as $attributeCode => $instruction) {
+        $configs = $this->helper->getProductImageAnalysisAttributeConfig();
+        foreach ($configs as $attributeCode => $config) {
             if (!array_key_exists($attributeCode, $metadata)) {
                 continue;
             }
-            $this->applyAttribute($product, $attributeCode, $metadata[$attributeCode], $force, $dryRun, $changes);
+            $this->applyAttribute($product, $attributeCode, $metadata[$attributeCode], $config, $force, $dryRun, $changes);
         }
+
+        $this->dedupePromotedMultiselectValues($product, $configs, $dryRun, $changes);
 
         return $changes;
     }
@@ -115,16 +123,23 @@ class MetadataApplier
      * Attribute option IDs are created as needed so Magento select and multiselect
      * fields can receive real option values immediately.
      *
+     * @param ProductInterface $product
      * @param array<string, mixed> $metadata
+     * @param bool $force
      * @return array{fields: array<string, mixed>, options: array<string, array<int, array{id: string|int, label: string}>>}
      */
-    public function buildFormData(array $metadata): array
+    public function buildFormData(ProductInterface $product, array $metadata, bool $force = false): array
     {
         $fields = [];
         $options = [];
 
-        foreach ($this->helper->getProductImageAnalysisAttributes() as $attributeCode => $instruction) {
+        $configs = $this->helper->getProductImageAnalysisAttributeConfig();
+        foreach ($configs as $attributeCode => $config) {
             if (!array_key_exists($attributeCode, $metadata)) {
+                continue;
+            }
+
+            if (!$this->canUpdateAttribute($product, $attributeCode, $force, $config['policy'])) {
                 continue;
             }
 
@@ -132,15 +147,23 @@ class MetadataApplier
             $input = (string) $attribute->getFrontendInput();
 
             if ($input === 'multiselect' || $input === 'select') {
-                $attributeOptions = $this->createAttributeOptions($attributeCode, $metadata[$attributeCode]);
+                $attributeOptions = $this->createAttributeOptions($attributeCode, $metadata[$attributeCode], (bool) $config['allow_new_options']);
+                if (empty($attributeOptions)) {
+                    continue;
+                }
                 $options[$attributeCode] = $attributeOptions;
                 $ids = array_column($attributeOptions, 'id');
-                $fields[$attributeCode] = $input === 'multiselect' ? $ids : (string) reset($ids);
+                $fieldValue = $this->getOptionFieldValue($product, $attributeCode, $input, $ids, $config['policy'], $force);
+                $fields[$attributeCode] = $input === 'multiselect'
+                    ? $this->splitOptionValue($fieldValue)
+                    : $fieldValue;
                 continue;
             }
 
             $fields[$attributeCode] = $this->normalizeScalarValue($metadata[$attributeCode]);
         }
+
+        $this->dedupePromotedFormValues($product, $configs, $fields);
 
         return [
             'fields' => $fields,
@@ -156,8 +179,8 @@ class MetadataApplier
      */
     public function hasGeneratedMetadata(ProductInterface $product): bool
     {
-        foreach (array_keys($this->helper->getProductImageAnalysisAttributes()) as $attributeCode) {
-            if (!$this->hasValue($product->getData($attributeCode))) {
+        foreach ($this->helper->getProductImageAnalysisAttributeConfig() as $attributeCode => $config) {
+            if ($this->canUpdateAttribute($product, $attributeCode, false, $config['policy'])) {
                 return false;
             }
         }
@@ -171,6 +194,7 @@ class MetadataApplier
      * @param ProductInterface $product
      * @param string $attributeCode
      * @param mixed $value
+     * @param array{attribute: string, instruction: string, policy: string, allow_new_options: bool} $config
      * @param bool $force
      * @param bool $dryRun
      * @param array<string, mixed> $changes
@@ -180,11 +204,12 @@ class MetadataApplier
         ProductInterface $product,
         string $attributeCode,
         $value,
+        array $config,
         bool $force,
         bool $dryRun,
         array &$changes
     ): void {
-        if (!$this->canUpdateAttribute($product, $attributeCode, $force)) {
+        if (!$this->canUpdateAttribute($product, $attributeCode, $force, $config['policy'])) {
             return;
         }
 
@@ -193,22 +218,27 @@ class MetadataApplier
 
         if ($input === 'multiselect' || $input === 'select') {
             if ($dryRun) {
-                $labels = $this->normalizeListValue($value);
+                $labels = $this->getDryRunOptionChangeLabels($product, $attributeCode, $input, $value, $config, $force);
                 if (!empty($labels)) {
                     $changes[$attributeCode] = $labels;
                 }
                 return;
             }
 
-            $options = $this->createAttributeOptions($attributeCode, $value);
+            $options = $this->createAttributeOptions($attributeCode, $value, (bool) $config['allow_new_options']);
             $optionIds = array_column($options, 'id');
             if (empty($optionIds)) {
                 return;
             }
-            $changes[$attributeCode] = array_column($options, 'label');
+            $fieldValue = $this->getOptionFieldValue($product, $attributeCode, $input, $optionIds, $config['policy'], $force);
+            if ($this->sameOptionValue($product->getData($attributeCode), $fieldValue)) {
+                return;
+            }
+
+            $changes[$attributeCode] = $this->getChangedOptionLabels($product, $attributeCode, $fieldValue);
             $product->setData(
                 $attributeCode,
-                $input === 'multiselect' ? implode(',', array_unique($optionIds)) : reset($optionIds)
+                $fieldValue
             );
             return;
         }
@@ -229,13 +259,14 @@ class MetadataApplier
      *
      * @param string $attributeCode
      * @param mixed $values
+     * @param bool $allowCreate
      * @return array<int, array{id: string|int, label: string}>
      */
-    private function createAttributeOptions(string $attributeCode, $values): array
+    private function createAttributeOptions(string $attributeCode, $values, bool $allowCreate): array
     {
         $options = [];
         foreach ($this->normalizeListValue($values) as $label) {
-            $optionId = $this->createOrGetOptionId($attributeCode, $label);
+            $optionId = $this->createOrGetOptionId($attributeCode, $label, $allowCreate);
             if ($optionId) {
                 $options[(string) $optionId] = ['id' => $optionId, 'label' => $label];
             }
@@ -245,17 +276,22 @@ class MetadataApplier
     }
 
     /**
-     * Create or resolve a keyword option ID.
+     * Create or resolve an option ID.
      *
      * @param string $attributeCode
      * @param string $label
+     * @param bool $allowCreate
      * @return string|int|false
      */
-    private function createOrGetOptionId(string $attributeCode, string $label)
+    private function createOrGetOptionId(string $attributeCode, string $label, bool $allowCreate)
     {
         $optionId = $this->getOptionId($attributeCode, $label);
         if ($optionId) {
             return $optionId;
+        }
+
+        if (!$allowCreate) {
+            return false;
         }
 
         /** @var OptionLabel $optionLabel */
@@ -297,11 +333,18 @@ class MetadataApplier
 
         if ($force || !isset($this->attributeValues[$attributeId])) {
             $this->attributeValues[$attributeId] = [];
+            $this->attributeLabels[$attributeId] = [];
             $sourceModel = $this->tableFactory->create();
             $sourceModel->setAttribute($attribute);
 
             foreach ($sourceModel->getAllOptions(true, false) as $option) {
-                $this->attributeValues[$attributeId][strtolower((string) $option['label'])] = $option['value'];
+                $label = trim((string) $option['label']);
+                $value = (string) $option['value'];
+                if ($label === '' || $value === '') {
+                    continue;
+                }
+                $this->attributeValues[$attributeId][strtolower($label)] = $option['value'];
+                $this->attributeLabels[$attributeId][$value] = $label;
             }
         }
 
@@ -321,6 +364,309 @@ class MetadataApplier
         }
 
         return $this->attributes[$attributeCode];
+    }
+
+    /**
+     * Build the final option field value for select/multiselect attributes.
+     *
+     * @param ProductInterface $product
+     * @param string $attributeCode
+     * @param string $input
+     * @param array<int, string|int> $generatedIds
+     * @param string $policy
+     * @param bool $force
+     * @return string|string[]
+     */
+    private function getOptionFieldValue(
+        ProductInterface $product,
+        string $attributeCode,
+        string $input,
+        array $generatedIds,
+        string $policy,
+        bool $force
+    ) {
+        $generatedIds = array_values(array_unique(array_map('strval', $generatedIds)));
+        if ($input === 'select') {
+            return (string) reset($generatedIds);
+        }
+
+        if (!$force && in_array($policy, [HelperData::IMAGE_ANALYSIS_POLICY_MERGE, HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE], true)) {
+            $generatedIds = array_values(array_unique(array_merge(
+                $this->getSelectedOptionIds($product, $attributeCode),
+                $generatedIds
+            )));
+        }
+
+        return implode(',', $generatedIds);
+    }
+
+    /**
+     * Get labels that would change during a dry run.
+     *
+     * @param ProductInterface $product
+     * @param string $attributeCode
+     * @param string $input
+     * @param mixed $value
+     * @param array{attribute: string, instruction: string, policy: string, allow_new_options: bool} $config
+     * @param bool $force
+     * @return string[]
+     */
+    private function getDryRunOptionChangeLabels(
+        ProductInterface $product,
+        string $attributeCode,
+        string $input,
+        $value,
+        array $config,
+        bool $force
+    ): array {
+        $labels = $this->normalizeListValue($value);
+        if (empty($labels)) {
+            return [];
+        }
+
+        if (!$config['allow_new_options']) {
+            $labels = $this->filterExistingOptionLabels($attributeCode, $labels);
+        }
+        if (empty($labels)) {
+            return [];
+        }
+
+        if ($input === 'select' || $force || !in_array($config['policy'], [HelperData::IMAGE_ANALYSIS_POLICY_MERGE, HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE], true)) {
+            return $labels;
+        }
+
+        $existing = array_map('strtolower', $this->getSelectedOptionLabels($product, $attributeCode));
+        return array_values(array_filter($labels, function ($label) use ($existing) {
+            return !in_array(strtolower($label), $existing, true);
+        }));
+    }
+
+    /**
+     * Keep only generated labels that already exist as options.
+     *
+     * @param string $attributeCode
+     * @param string[] $labels
+     * @return string[]
+     */
+    private function filterExistingOptionLabels(string $attributeCode, array $labels): array
+    {
+        $existing = [];
+        foreach ($labels as $label) {
+            if ($this->getOptionId($attributeCode, $label)) {
+                $existing[] = $label;
+            }
+        }
+
+        return $existing;
+    }
+
+    /**
+     * Get selected option IDs from a product attribute value.
+     *
+     * @param ProductInterface $product
+     * @param string $attributeCode
+     * @return string[]
+     */
+    private function getSelectedOptionIds(ProductInterface $product, string $attributeCode): array
+    {
+        $value = $product->getData($attributeCode);
+        if (is_array($value)) {
+            $parts = $value;
+        } else {
+            $parts = explode(',', (string) $value);
+        }
+
+        $ids = [];
+        foreach ($parts as $part) {
+            $part = trim((string) $part);
+            if ($part !== '') {
+                $ids[] = $part;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * Get selected option labels for a product attribute.
+     *
+     * @param ProductInterface $product
+     * @param string $attributeCode
+     * @return string[]
+     */
+    private function getSelectedOptionLabels(ProductInterface $product, string $attributeCode): array
+    {
+        return $this->getOptionLabelsByIds($attributeCode, $this->getSelectedOptionIds($product, $attributeCode));
+    }
+
+    /**
+     * Get labels for option IDs.
+     *
+     * @param string $attributeCode
+     * @param array<int, string|int> $ids
+     * @return string[]
+     */
+    private function getOptionLabelsByIds(string $attributeCode, array $ids): array
+    {
+        $attribute = $this->getAttribute($attributeCode);
+        $attributeId = $attribute->getAttributeId();
+        $this->getOptionId($attributeCode, '__mageai_cache_warm__');
+
+        $labels = [];
+        foreach ($ids as $id) {
+            $id = (string) $id;
+            if (isset($this->attributeLabels[$attributeId][$id])) {
+                $labels[] = $this->attributeLabels[$attributeId][$id];
+            }
+        }
+
+        return $labels;
+    }
+
+    /**
+     * Determine which option labels changed compared to current product data.
+     *
+     * @param ProductInterface $product
+     * @param string $attributeCode
+     * @param string|string[] $fieldValue
+     * @return string[]
+     */
+    private function getChangedOptionLabels(ProductInterface $product, string $attributeCode, $fieldValue): array
+    {
+        $newIds = is_array($fieldValue) ? $fieldValue : explode(',', (string) $fieldValue);
+        $oldIds = $this->getSelectedOptionIds($product, $attributeCode);
+        $changedIds = array_values(array_diff(array_map('strval', $newIds), array_map('strval', $oldIds)));
+
+        return $this->getOptionLabelsByIds($attributeCode, $changedIds ?: $newIds);
+    }
+
+    /**
+     * Compare select/multiselect field values.
+     *
+     * @param mixed $current
+     * @param mixed $next
+     * @return bool
+     */
+    private function sameOptionValue($current, $next): bool
+    {
+        $currentIds = is_array($current) ? $current : explode(',', (string) $current);
+        $nextIds = is_array($next) ? $next : explode(',', (string) $next);
+        $currentIds = array_values(array_filter(array_map('trim', array_map('strval', $currentIds)), 'strlen'));
+        $nextIds = array_values(array_filter(array_map('trim', array_map('strval', $nextIds)), 'strlen'));
+        sort($currentIds);
+        sort($nextIds);
+
+        return $currentIds === $nextIds;
+    }
+
+    /**
+     * Split a select/multiselect value into option ID strings.
+     *
+     * @param mixed $value
+     * @return string[]
+     */
+    private function splitOptionValue($value): array
+    {
+        $ids = is_array($value) ? $value : explode(',', (string) $value);
+        return array_values(array_filter(array_map('trim', array_map('strval', $ids)), 'strlen'));
+    }
+
+    /**
+     * Remove promoted labels from later configured multiselect attributes.
+     *
+     * @param ProductInterface $product
+     * @param array<string, array{attribute: string, instruction: string, policy: string, allow_new_options: bool}> $configs
+     * @param bool $dryRun
+     * @param array<string, mixed> $changes
+     * @return void
+     */
+    private function dedupePromotedMultiselectValues(ProductInterface $product, array $configs, bool $dryRun, array &$changes): void
+    {
+        $promoted = [];
+        foreach ($configs as $attributeCode => $config) {
+            $attribute = $this->getAttribute($attributeCode);
+            if ((string) $attribute->getFrontendInput() !== 'multiselect') {
+                continue;
+            }
+
+            $labels = $this->getSelectedOptionLabels($product, $attributeCode);
+            if ($dryRun && isset($changes[$attributeCode]) && is_array($changes[$attributeCode])) {
+                $labels = array_merge($labels, $changes[$attributeCode]);
+            }
+
+            if (!empty($promoted)) {
+                $ids = $this->getSelectedOptionIds($product, $attributeCode);
+                $remainingIds = [];
+                $removed = [];
+                foreach ($ids as $id) {
+                    $label = $this->getOptionLabelsByIds($attributeCode, [$id])[0] ?? '';
+                    if ($label !== '' && isset($promoted[strtolower($label)])) {
+                        $removed[] = $label;
+                        continue;
+                    }
+                    $remainingIds[] = $id;
+                }
+
+                if (!empty($removed)) {
+                    $changes[$attributeCode] = array_values(array_unique(array_merge(
+                        isset($changes[$attributeCode]) && is_array($changes[$attributeCode]) ? $changes[$attributeCode] : [],
+                        $removed
+                    )));
+                    if (!$dryRun) {
+                        $product->setData($attributeCode, implode(',', $remainingIds));
+                    }
+                }
+            }
+
+            if ($config['policy'] === HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE) {
+                foreach ($labels as $label) {
+                    $promoted[strtolower($label)] = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * Remove promoted labels from later form values for admin AJAX responses.
+     *
+     * @param ProductInterface $product
+     * @param array<string, array{attribute: string, instruction: string, policy: string, allow_new_options: bool}> $configs
+     * @param array<string, mixed> $fields
+     * @return void
+     */
+    private function dedupePromotedFormValues(ProductInterface $product, array $configs, array &$fields): void
+    {
+        $promoted = [];
+        foreach ($configs as $attributeCode => $config) {
+            $attribute = $this->getAttribute($attributeCode);
+            if ((string) $attribute->getFrontendInput() !== 'multiselect') {
+                continue;
+            }
+
+            $ids = isset($fields[$attributeCode]) && is_array($fields[$attributeCode])
+                ? $fields[$attributeCode]
+                : $this->getSelectedOptionIds($product, $attributeCode);
+
+            if (!empty($promoted)) {
+                $remainingIds = [];
+                foreach ($ids as $id) {
+                    $label = $this->getOptionLabelsByIds($attributeCode, [$id])[0] ?? '';
+                    if ($label !== '' && isset($promoted[strtolower($label)])) {
+                        continue;
+                    }
+                    $remainingIds[] = (string) $id;
+                }
+                if ($remainingIds !== array_map('strval', $ids)) {
+                    $fields[$attributeCode] = $remainingIds;
+                }
+            }
+
+            if ($config['policy'] === HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE) {
+                foreach ($this->getOptionLabelsByIds($attributeCode, $ids) as $label) {
+                    $promoted[strtolower($label)] = true;
+                }
+            }
+        }
     }
 
     /**
@@ -370,15 +716,20 @@ class MetadataApplier
      * @param ProductInterface $product
      * @param string $attributeCode
      * @param bool $force
+     * @param string $policy
      * @return bool
      */
-    private function canUpdateAttribute(ProductInterface $product, string $attributeCode, bool $force): bool
+    private function canUpdateAttribute(ProductInterface $product, string $attributeCode, bool $force, string $policy): bool
     {
         if ($force) {
             return true;
         }
 
-        if ($attributeCode === 'name') {
+        if (in_array($policy, [HelperData::IMAGE_ANALYSIS_POLICY_REPLACE, HelperData::IMAGE_ANALYSIS_POLICY_MERGE, HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE], true)) {
+            return true;
+        }
+
+        if ($policy === HelperData::IMAGE_ANALYSIS_POLICY_PLACEHOLDER && $attributeCode === 'name') {
             return $this->isPlaceholderTitle($product);
         }
 

@@ -10,24 +10,17 @@ namespace Mageprince\MageAI\Block\Adminhtml\System\Config\Form\Field;
 
 use Magento\Framework\View\Element\Context;
 use Magento\Framework\View\Element\Html\Select;
-use Mageprince\MageAI\Model\Config\Source\ImageAnalysisAttributes;
+use Mageprince\MageAI\Helper\Data as HelperData;
 
-class AttributeColumn extends Select
+class OverwritePolicyColumn extends Select
 {
     /**
-     * @var ImageAnalysisAttributes
-     */
-    protected $attributes;
-
-    /**
      * @param Context $context
-     * @param ImageAnalysisAttributes $attributes
      * @param array $data
      */
-    public function __construct(Context $context, ImageAnalysisAttributes $attributes, array $data = [])
+    public function __construct(Context $context, array $data = [])
     {
         parent::__construct($context, $data);
-        $this->attributes = $attributes;
     }
 
     /**
@@ -53,19 +46,18 @@ class AttributeColumn extends Select
     }
 
     /**
-     * Render attribute options.
+     * Render policy options.
      *
      * @return string
      */
     protected function _toHtml()
     {
         if (!$this->getOptions()) {
-            foreach ($this->attributes->toOptionArray() as $option) {
-                if (($option['value'] ?? '') === '') {
-                    continue;
-                }
-                $this->addOption($option['value'], $option['label']);
-            }
+            $this->addOption(HelperData::IMAGE_ANALYSIS_POLICY_EMPTY, __('Only if empty'));
+            $this->addOption(HelperData::IMAGE_ANALYSIS_POLICY_PLACEHOLDER, __('Empty / placeholder'));
+            $this->addOption(HelperData::IMAGE_ANALYSIS_POLICY_MERGE, __('Merge with existing'));
+            $this->addOption(HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE, __('Merge + promote earlier rows'));
+            $this->addOption(HelperData::IMAGE_ANALYSIS_POLICY_REPLACE, __('Always replace'));
         }
 
         return parent::_toHtml();

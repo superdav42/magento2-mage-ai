@@ -10,24 +10,16 @@ namespace Mageprince\MageAI\Block\Adminhtml\System\Config\Form\Field;
 
 use Magento\Framework\View\Element\Context;
 use Magento\Framework\View\Element\Html\Select;
-use Mageprince\MageAI\Model\Config\Source\ImageAnalysisAttributes;
 
-class AttributeColumn extends Select
+class AllowNewOptionsColumn extends Select
 {
     /**
-     * @var ImageAnalysisAttributes
-     */
-    protected $attributes;
-
-    /**
      * @param Context $context
-     * @param ImageAnalysisAttributes $attributes
      * @param array $data
      */
-    public function __construct(Context $context, ImageAnalysisAttributes $attributes, array $data = [])
+    public function __construct(Context $context, array $data = [])
     {
         parent::__construct($context, $data);
-        $this->attributes = $attributes;
     }
 
     /**
@@ -53,19 +45,15 @@ class AttributeColumn extends Select
     }
 
     /**
-     * Render attribute options.
+     * Render yes/no options.
      *
      * @return string
      */
     protected function _toHtml()
     {
         if (!$this->getOptions()) {
-            foreach ($this->attributes->toOptionArray() as $option) {
-                if (($option['value'] ?? '') === '') {
-                    continue;
-                }
-                $this->addOption($option['value'], $option['label']);
-            }
+            $this->addOption('0', __('No'));
+            $this->addOption('1', __('Yes'));
         }
 
         return parent::_toHtml();

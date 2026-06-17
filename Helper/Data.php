@@ -25,6 +25,12 @@ use Magento\Framework\App\Helper\AbstractHelper;
 
 class Data extends AbstractHelper
 {
+    public const IMAGE_ANALYSIS_POLICY_EMPTY = 'empty';
+    public const IMAGE_ANALYSIS_POLICY_PLACEHOLDER = 'placeholder';
+    public const IMAGE_ANALYSIS_POLICY_MERGE = 'merge';
+    public const IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE = 'merge_promote';
+    public const IMAGE_ANALYSIS_POLICY_REPLACE = 'replace';
+
     public const XML_PATH_IS_ENABLED = 'mageai/general/enabled';
     public const XML_PATH_BASELINE_PROMPT = 'mageai/general/baseline_prompt';
     public const XML_PATH_PROVIDER = 'mageai/api/provider';
@@ -362,7 +368,7 @@ class Data extends AbstractHelper
      */
     public function getProductImageAnalysisMaxTokens(): int
     {
-        return (int) ($this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_MAX_TOKENS) ?: 1200);
+        return (int) ($this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_MAX_TOKENS) ?: 2000);
     }
 
     /**
@@ -385,6 +391,21 @@ class Data extends AbstractHelper
      */
     public function getProductImageAnalysisAttributes(): array
     {
+        $attributes = [];
+        foreach ($this->getProductImageAnalysisAttributeConfig() as $attributeCode => $config) {
+            $attributes[$attributeCode] = $config['instruction'];
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * Get configured image-analysis target attributes with update behaviour.
+     *
+     * @return array<string, array{attribute: string, instruction: string, policy: string, allow_new_options: bool}>
+     */
+    public function getProductImageAnalysisAttributeConfig(): array
+    {
         $configured = $this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_ATTRIBUTES);
         $attributes = [];
 
@@ -396,7 +417,16 @@ class Data extends AbstractHelper
                 $code = trim((string) ($row['attribute'] ?? ''));
                 $instruction = trim((string) ($row['instruction'] ?? ''));
                 if ($code !== '' && $code !== '__empty' && $instruction !== '') {
-                    $attributes[$code] = $instruction;
+                    $attributes[$code] = [
+                        'attribute' => $code,
+                        'instruction' => $instruction,
+                        'policy' => $this->normalizeImageAnalysisPolicy(
+                            (string) ($row['policy'] ?? $this->getDefaultImageAnalysisPolicy($code))
+                        ),
+                        'allow_new_options' => $this->normalizeBoolean(
+                            $row['allow_new_options'] ?? $this->getDefaultAllowNewOptions($code)
+                        ),
+                    ];
                 }
             }
         }
@@ -405,12 +435,135 @@ class Data extends AbstractHelper
             return $attributes;
         }
 
-        return [
-            'name' => 'Generate a short, natural, descriptive product title based on the visible image content. Do not keyword-stuff.',
-            'description' => 'Generate one clear ecommerce product description paragraph, 80-180 words. Use the image as the primary source and use any existing title or keywords as supporting context only when helpful.',
-            'keywords' => 'Generate the strongest primary catalog/search keywords as concise phrases. Return an array of 3-8 phrases.',
-            'secondary_keywords' => 'Generate supporting subject, setting, style, season, emotion, and usage keywords. Return an array of 5-12 phrases.',
-            'tertiary_keywords' => 'Generate additional related search terms. Return an array of 5-15 phrases.',
+        return $this->getDefaultImageAnalysisAttributeConfig();
+    }
+
+    /**
+     * Get default target attributes for image analysis.
+     *
+     * @return array<string, array{attribute: string, instruction: string, policy: string, allow_new_options: bool}>
+     */
+    private function getDefaultImageAnalysisAttributeConfig(): array
+    {
+        $defaults = [
+            'name' => [
+                'instruction' => 'Generate a short, natural, descriptive product title based on the visible image content. Do not keyword-stuff.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_PLACEHOLDER,
+                'allow_new_options' => false,
+            ],
+            'description' => [
+                'instruction' => 'Generate one clear ecommerce product description paragraph, 80-180 words. Use the image as the primary source and use any existing title or keywords as supporting context only when helpful.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_EMPTY,
+                'allow_new_options' => false,
+            ],
+            'meta_title' => [
+                'instruction' => 'Generate a concise SEO meta title based on the image and product context. Keep it under 60 characters when possible.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_EMPTY,
+                'allow_new_options' => false,
+            ],
+            'meta_description' => [
+                'instruction' => 'Generate a natural SEO meta description based on the image and product context. Keep it under 155 characters when possible.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_EMPTY,
+                'allow_new_options' => false,
+            ],
+            'meta_keyword' => [
+                'instruction' => 'Generate concise SEO meta keywords based on the image and product context. Return a comma-separated phrase list.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_EMPTY,
+                'allow_new_options' => false,
+            ],
+            'keywords' => [
+                'instruction' => 'Generate the strongest primary catalog/search keywords as concise phrases. Return an array of 3-8 phrases. Promote terms here when they are primary subjects, even if currently stored in a secondary or tertiary keyword field.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE,
+                'allow_new_options' => true,
+            ],
+            'secondary_keywords' => [
+                'instruction' => 'Generate supporting subject, setting, style, season, emotion, and usage keywords. Return an array of 5-12 phrases. Do not repeat terms that belong in primary keywords.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_MERGE,
+                'allow_new_options' => true,
+            ],
+            'tertiary_keywords' => [
+                'instruction' => 'Generate additional related search terms. Return an array of 5-15 phrases. Do not repeat stronger primary or secondary terms.',
+                'policy' => self::IMAGE_ANALYSIS_POLICY_MERGE,
+                'allow_new_options' => true,
+            ],
         ];
+
+        $config = [];
+        foreach ($defaults as $code => $data) {
+            $config[$code] = [
+                'attribute' => $code,
+                'instruction' => $data['instruction'],
+                'policy' => $data['policy'],
+                'allow_new_options' => $data['allow_new_options'],
+            ];
+        }
+
+        return $config;
+    }
+
+    /**
+     * Normalize an image-analysis update policy.
+     *
+     * @param string $policy
+     * @return string
+     */
+    private function normalizeImageAnalysisPolicy(string $policy): string
+    {
+        $valid = [
+            self::IMAGE_ANALYSIS_POLICY_EMPTY,
+            self::IMAGE_ANALYSIS_POLICY_PLACEHOLDER,
+            self::IMAGE_ANALYSIS_POLICY_MERGE,
+            self::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE,
+            self::IMAGE_ANALYSIS_POLICY_REPLACE,
+        ];
+
+        return in_array($policy, $valid, true) ? $policy : self::IMAGE_ANALYSIS_POLICY_EMPTY;
+    }
+
+    /**
+     * Get legacy-safe default policy for older rows without the policy column.
+     *
+     * @param string $attributeCode
+     * @return string
+     */
+    private function getDefaultImageAnalysisPolicy(string $attributeCode): string
+    {
+        if ($attributeCode === 'name') {
+            return self::IMAGE_ANALYSIS_POLICY_PLACEHOLDER;
+        }
+        if ($attributeCode === 'keywords') {
+            return self::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE;
+        }
+        if (in_array($attributeCode, ['secondary_keywords', 'tertiary_keywords'], true)) {
+            return self::IMAGE_ANALYSIS_POLICY_MERGE;
+        }
+
+        return self::IMAGE_ANALYSIS_POLICY_EMPTY;
+    }
+
+    /**
+     * Get legacy-safe default option creation behaviour.
+     *
+     * @param string $attributeCode
+     * @return bool
+     */
+    private function getDefaultAllowNewOptions(string $attributeCode): bool
+    {
+        return in_array($attributeCode, ['keywords', 'secondary_keywords', 'tertiary_keywords'], true);
+    }
+
+    /**
+     * Normalize Magento config truthy/falsey values.
+     *
+     * @param mixed $value
+     * @return bool
+     */
+    private function normalizeBoolean($value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return in_array(strtolower((string) $value), ['1', 'true', 'yes', 'on'], true);
     }
 }

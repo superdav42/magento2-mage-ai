@@ -225,7 +225,7 @@
                     <label>Update These Attributes Based on Product Image Analysis</label>
                     <frontend_model>Mageprince\MageAI\Block\Adminhtml\System\Config\Form\Field\ImageAnalysisAttributes</frontend_model>
                     <backend_model>Magento\Config\Model\Config\Backend\Serialized\ArraySerialized</backend_model>
-                    <comment><![CDATA[Add one row per product attribute to update. The prompt description is included in the structured-output schema for that specific attribute, so title, meta title, description, and keyword attributes can each be generated differently. Existing values for these attributes are also included as context, so empty fields can be generated using populated title/keyword/description fields.]]></comment>
+                    <comment><![CDATA[Add one row per safe product attribute to update. Supported inputs are text, textarea, select, and multiselect. The update policy controls whether MageAI fills only empty fields, replaces values, or merges keyword/tag-style multiselects. Enable "Create Options" only for tag-style select/multiselect attributes where AI may add missing options. Existing values for configured attributes are included as context, so empty SEO/title/description fields can be generated from populated values.]]></comment>
                 </field>
             </group>
         </section>
