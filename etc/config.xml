@@ -80,24 +80,37 @@ Follow these guidelines:
             </image_generation>
             <product_image_analysis>
                 <max_tokens>1200</max_tokens>
-                <prompt><![CDATA[Analyze the product image and generate catalog metadata for a Christian art and photography marketplace.
-
-Return only valid JSON with this exact shape:
-{
-  "title": "short descriptive product title",
-  "description": "one clear ecommerce product description paragraph, 80-180 words",
-  "primary_keywords": ["most important visual/concept keywords"],
-  "secondary_keywords": ["supporting subject, setting, style, season, emotion, and usage keywords"],
-  "tertiary_keywords": ["additional related search terms"]
-}
+                <temperature>0</temperature>
+                <prompt><![CDATA[Analyze the product image and generate catalog attribute values for an ecommerce product.
 
 Guidelines:
-- Base the result on visible image content only. Do not invent a Bible verse, artist name, SKU, denomination, or historical event unless visible in the image.
-- Keep the title natural and specific, not keyword-stuffed.
-- Use concise keyword phrases suitable for catalog search facets.
-- Prefer Christian art vocabulary when the image supports it, such as Jesus, Christ, cross, prayer, church, Bible, worship, resurrection, nativity, shepherd, disciples, angel, heaven, faith, grace, hope, love, Easter, Christmas.
-- Put the strongest 3-8 terms in primary_keywords, 5-12 in secondary_keywords, and 5-15 in tertiary_keywords.
-- Do not wrap JSON in markdown or code fences.]]></prompt>
+- Base the result primarily on visible image content.
+- Use existing product attribute values as supporting context when they are provided, especially when generating a blank attribute from already-populated title, description, or keyword fields.
+- Do not invent artist names, SKUs, brands, Bible verses, denominations, historical events, or proper nouns unless they are visible in the image or present in the existing product context.
+- Follow each target attribute's instruction exactly.
+- Return values through the requested JSON schema only. Do not wrap JSON in markdown or code fences.]]></prompt>
+                <attributes>
+                    <name>
+                        <attribute>name</attribute>
+                        <instruction>Generate a short, natural, descriptive product title based on the visible image content. Do not keyword-stuff.</instruction>
+                    </name>
+                    <description>
+                        <attribute>description</attribute>
+                        <instruction>Generate one clear ecommerce product description paragraph, 80-180 words. Use the image as the primary source and use any existing title or keywords as supporting context only when helpful.</instruction>
+                    </description>
+                    <keywords>
+                        <attribute>keywords</attribute>
+                        <instruction>Generate the strongest primary catalog/search keywords as concise phrases. Return an array of 3-8 phrases.</instruction>
+                    </keywords>
+                    <secondary_keywords>
+                        <attribute>secondary_keywords</attribute>
+                        <instruction>Generate supporting subject, setting, style, season, emotion, and usage keywords. Return an array of 5-12 phrases.</instruction>
+                    </secondary_keywords>
+                    <tertiary_keywords>
+                        <attribute>tertiary_keywords</attribute>
+                        <instruction>Generate additional related search terms. Return an array of 5-15 phrases.</instruction>
+                    </tertiary_keywords>
+                </attributes>
             </product_image_analysis>
         </mageai>
     </default>

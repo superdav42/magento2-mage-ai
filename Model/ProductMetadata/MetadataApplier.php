@@ -18,6 +18,7 @@ use Magento\Eav\Api\Data\AttributeOptionLabelInterfaceFactory;
 use Magento\Eav\Model\Entity\Attribute\OptionLabel;
 use Magento\Eav\Model\Entity\Attribute\Source\TableFactory;
 use Magento\Framework\Exception\InputException;
+use Mageprince\MageAI\Helper\Data as HelperData;
 
 class MetadataApplier
 {
@@ -47,6 +48,11 @@ class MetadataApplier
     protected $attributeOptionManagement;
 
     /**
+     * @var HelperData
+     */
+    protected $helper;
+
+    /**
      * @var array<string, mixed>
      */
     protected $attributes = [];
@@ -62,19 +68,22 @@ class MetadataApplier
      * @param AttributeOptionLabelInterfaceFactory $optionLabelFactory
      * @param AttributeOptionInterfaceFactory $optionFactory
      * @param AttributeOptionManagementInterface $attributeOptionManagement
+     * @param HelperData $helper
      */
     public function __construct(
         ProductAttributeRepositoryInterface $attributeRepository,
         TableFactory $tableFactory,
         AttributeOptionLabelInterfaceFactory $optionLabelFactory,
         AttributeOptionInterfaceFactory $optionFactory,
-        AttributeOptionManagementInterface $attributeOptionManagement
+        AttributeOptionManagementInterface $attributeOptionManagement,
+        HelperData $helper
     ) {
         $this->attributeRepository = $attributeRepository;
         $this->tableFactory = $tableFactory;
         $this->optionLabelFactory = $optionLabelFactory;
         $this->optionFactory = $optionFactory;
         $this->attributeOptionManagement = $attributeOptionManagement;
+        $this->helper = $helper;
     }
 
     /**
@@ -90,25 +99,12 @@ class MetadataApplier
     {
         $changes = [];
 
-        $title = trim((string) ($metadata['title'] ?? ''));
-        if ($title !== '' && ($force || $this->isPlaceholderTitle($product))) {
-            $changes['name'] = $title;
-            if (!$dryRun) {
-                $product->setName($title);
+        foreach ($this->helper->getProductImageAnalysisAttributes() as $attributeCode => $instruction) {
+            if (!array_key_exists($attributeCode, $metadata)) {
+                continue;
             }
+            $this->applyAttribute($product, $attributeCode, $metadata[$attributeCode], $force, $dryRun, $changes);
         }
-
-        $description = trim((string) ($metadata['description'] ?? ''));
-        if ($description !== '' && ($force || !$this->hasValue($product->getDescription()))) {
-            $changes['description'] = $description;
-            if (!$dryRun) {
-                $product->setDescription($description);
-            }
-        }
-
-        $this->applyKeywordTier($product, 'keywords', $metadata['primary_keywords'] ?? [], $force, $dryRun, $changes);
-        $this->applyKeywordTier($product, 'secondary_keywords', $metadata['secondary_keywords'] ?? [], $force, $dryRun, $changes);
-        $this->applyKeywordTier($product, 'tertiary_keywords', $metadata['tertiary_keywords'] ?? [], $force, $dryRun, $changes);
 
         return $changes;
     }
@@ -116,31 +112,39 @@ class MetadataApplier
     /**
      * Build admin product form values for generated metadata without saving a product.
      *
-     * Keyword option IDs are created as needed so Magento's multiselect fields can
-     * receive real option values immediately.
+     * Attribute option IDs are created as needed so Magento select and multiselect
+     * fields can receive real option values immediately.
      *
      * @param array<string, mixed> $metadata
-     * @return array{title: string, description: string, keywords: array<string, array<int, string|int>>, keyword_options: array<string, array<int, array{id: string|int, label: string}>>}
+     * @return array{fields: array<string, mixed>, options: array<string, array<int, array{id: string|int, label: string}>>}
      */
     public function buildFormData(array $metadata): array
     {
-        $primaryKeywords = $this->createKeywordOptions('keywords', $metadata['primary_keywords'] ?? []);
-        $secondaryKeywords = $this->createKeywordOptions('secondary_keywords', $metadata['secondary_keywords'] ?? []);
-        $tertiaryKeywords = $this->createKeywordOptions('tertiary_keywords', $metadata['tertiary_keywords'] ?? []);
+        $fields = [];
+        $options = [];
+
+        foreach ($this->helper->getProductImageAnalysisAttributes() as $attributeCode => $instruction) {
+            if (!array_key_exists($attributeCode, $metadata)) {
+                continue;
+            }
+
+            $attribute = $this->getAttribute($attributeCode);
+            $input = (string) $attribute->getFrontendInput();
+
+            if ($input === 'multiselect' || $input === 'select') {
+                $attributeOptions = $this->createAttributeOptions($attributeCode, $metadata[$attributeCode]);
+                $options[$attributeCode] = $attributeOptions;
+                $ids = array_column($attributeOptions, 'id');
+                $fields[$attributeCode] = $input === 'multiselect' ? $ids : (string) reset($ids);
+                continue;
+            }
+
+            $fields[$attributeCode] = $this->normalizeScalarValue($metadata[$attributeCode]);
+        }
 
         return [
-            'title' => trim((string) ($metadata['title'] ?? '')),
-            'description' => trim((string) ($metadata['description'] ?? '')),
-            'keywords' => [
-                'keywords' => array_column($primaryKeywords, 'id'),
-                'secondary_keywords' => array_column($secondaryKeywords, 'id'),
-                'tertiary_keywords' => array_column($tertiaryKeywords, 'id'),
-            ],
-            'keyword_options' => [
-                'keywords' => $primaryKeywords,
-                'secondary_keywords' => $secondaryKeywords,
-                'tertiary_keywords' => $tertiaryKeywords,
-            ],
+            'fields' => $fields,
+            'options' => $options,
         ];
     }
 
@@ -152,69 +156,85 @@ class MetadataApplier
      */
     public function hasGeneratedMetadata(ProductInterface $product): bool
     {
-        return $this->hasValue($product->getDescription())
-            && $this->hasValue($product->getData('keywords'))
-            && $this->hasValue($product->getData('secondary_keywords'))
-            && $this->hasValue($product->getData('tertiary_keywords'));
+        foreach (array_keys($this->helper->getProductImageAnalysisAttributes()) as $attributeCode) {
+            if (!$this->hasValue($product->getData($attributeCode))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
-     * Apply a keyword list to a multiselect product attribute.
+     * Apply a generated value to one product attribute.
      *
      * @param ProductInterface $product
      * @param string $attributeCode
-     * @param mixed $keywords
+     * @param mixed $value
      * @param bool $force
      * @param bool $dryRun
      * @param array<string, mixed> $changes
      * @return void
      */
-    private function applyKeywordTier(
+    private function applyAttribute(
         ProductInterface $product,
         string $attributeCode,
-        $keywords,
+        $value,
         bool $force,
         bool $dryRun,
         array &$changes
     ): void {
-        $labels = $this->normalizeKeywordLabels($keywords);
-        if (empty($labels) || (!$force && $this->hasValue($product->getData($attributeCode)))) {
+        if (!$this->canUpdateAttribute($product, $attributeCode, $force)) {
             return;
         }
 
-        $changes[$attributeCode] = $labels;
-        if ($dryRun) {
+        $attribute = $this->getAttribute($attributeCode);
+        $input = (string) $attribute->getFrontendInput();
+
+        if ($input === 'multiselect' || $input === 'select') {
+            if ($dryRun) {
+                $labels = $this->normalizeListValue($value);
+                if (!empty($labels)) {
+                    $changes[$attributeCode] = $labels;
+                }
+                return;
+            }
+
+            $options = $this->createAttributeOptions($attributeCode, $value);
+            $optionIds = array_column($options, 'id');
+            if (empty($optionIds)) {
+                return;
+            }
+            $changes[$attributeCode] = array_column($options, 'label');
+            $product->setData(
+                $attributeCode,
+                $input === 'multiselect' ? implode(',', array_unique($optionIds)) : reset($optionIds)
+            );
             return;
         }
 
-        $optionIds = $this->createKeywordOptionIds($attributeCode, $labels);
+        $normalized = $this->normalizeScalarValue($value);
+        if ($normalized === '') {
+            return;
+        }
 
-        $product->setData($attributeCode, implode(',', array_unique(array_filter($optionIds))));
+        $changes[$attributeCode] = $normalized;
+        if (!$dryRun) {
+            $product->setData($attributeCode, $normalized);
+        }
     }
 
     /**
-     * Create or resolve option IDs for keyword labels.
+     * Create or resolve option records for generated option labels.
      *
      * @param string $attributeCode
-     * @param mixed $keywords
-     * @return array<int, string|int>
-     */
-    private function createKeywordOptionIds(string $attributeCode, $keywords): array
-    {
-        return array_column($this->createKeywordOptions($attributeCode, $keywords), 'id');
-    }
-
-    /**
-     * Create or resolve option records for keyword labels.
-     *
-     * @param string $attributeCode
-     * @param mixed $keywords
+     * @param mixed $values
      * @return array<int, array{id: string|int, label: string}>
      */
-    private function createKeywordOptions(string $attributeCode, $keywords): array
+    private function createAttributeOptions(string $attributeCode, $values): array
     {
         $options = [];
-        foreach ($this->normalizeKeywordLabels($keywords) as $label) {
+        foreach ($this->normalizeListValue($values) as $label) {
             $optionId = $this->createOrGetOptionId($attributeCode, $label);
             if ($optionId) {
                 $options[(string) $optionId] = ['id' => $optionId, 'label' => $label];
@@ -304,29 +324,65 @@ class MetadataApplier
     }
 
     /**
-     * Normalize keyword labels.
+     * Normalize a generated list value.
      *
-     * @param mixed $keywords
+     * @param mixed $values
      * @return string[]
      */
-    private function normalizeKeywordLabels($keywords): array
+    private function normalizeListValue($values): array
     {
-        if (is_string($keywords)) {
-            $keywords = explode(',', $keywords);
+        if (is_string($values)) {
+            $values = explode(',', $values);
         }
-        if (!is_array($keywords)) {
+        if (!is_array($values)) {
             return [];
         }
 
         $normalized = [];
-        foreach ($keywords as $keyword) {
-            $keyword = trim((string) $keyword);
-            if ($keyword !== '') {
-                $normalized[strtolower($keyword)] = $keyword;
+        foreach ($values as $value) {
+            $value = trim((string) $value);
+            if ($value !== '') {
+                $normalized[strtolower($value)] = $value;
             }
         }
 
         return array_values($normalized);
+    }
+
+    /**
+     * Normalize a generated scalar value.
+     *
+     * @param mixed $value
+     * @return string
+     */
+    private function normalizeScalarValue($value): string
+    {
+        if (is_array($value)) {
+            $value = implode(', ', $this->normalizeListValue($value));
+        }
+
+        return trim((string) $value);
+    }
+
+    /**
+     * Determine whether a product attribute may be updated.
+     *
+     * @param ProductInterface $product
+     * @param string $attributeCode
+     * @param bool $force
+     * @return bool
+     */
+    private function canUpdateAttribute(ProductInterface $product, string $attributeCode, bool $force): bool
+    {
+        if ($force) {
+            return true;
+        }
+
+        if ($attributeCode === 'name') {
+            return $this->isPlaceholderTitle($product);
+        }
+
+        return !$this->hasValue($product->getData($attributeCode));
     }
 
     /**

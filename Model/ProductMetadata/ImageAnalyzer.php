@@ -10,6 +10,7 @@
 namespace Mageprince\MageAI\Model\ProductMetadata;
 
 use Magento\Catalog\Api\Data\ProductInterface;
+use Magento\Catalog\Api\ProductAttributeRepositoryInterface;
 use Magento\Framework\HTTP\Client\Curl;
 use Magento\Framework\Serialize\Serializer\Json;
 use Mageprince\MageAI\Helper\Data as HelperData;
@@ -40,28 +41,36 @@ class ImageAnalyzer
     protected $imageReader;
 
     /**
+     * @var ProductAttributeRepositoryInterface
+     */
+    protected $attributeRepository;
+
+    /**
      * @param Curl $curl
      * @param Json $json
      * @param HelperData $helper
      * @param ImageReader $imageReader
+     * @param ProductAttributeRepositoryInterface $attributeRepository
      */
     public function __construct(
         Curl $curl,
         Json $json,
         HelperData $helper,
-        ImageReader $imageReader
+        ImageReader $imageReader,
+        ProductAttributeRepositoryInterface $attributeRepository
     ) {
         $this->curl = $curl;
         $this->json = $json;
         $this->helper = $helper;
         $this->imageReader = $imageReader;
+        $this->attributeRepository = $attributeRepository;
     }
 
     /**
-     * Analyze a product image and return generated title, description and keyword tiers.
+     * Analyze a product image and return generated configured product attributes.
      *
      * @param ProductInterface $product
-     * @return array{title: string, description: string, primary_keywords: string[], secondary_keywords: string[], tertiary_keywords: string[]}
+     * @return array<string, mixed>
      * @throws QueryException
      */
     public function analyze(ProductInterface $product): array
@@ -85,24 +94,27 @@ class ImageAnalyzer
      */
     private function buildPayload(ProductInterface $product, string $imageData, string $mimeType): string
     {
-        $prompt = $this->helper->getProductImageAnalysisPrompt();
-        $context = sprintf(
-            "\n\nExisting product context:\n- SKU: %s\n- Current title: %s\n- Current description: %s",
-            (string) $product->getSku(),
-            (string) $product->getName(),
-            trim(strip_tags((string) $product->getDescription()))
-        );
+        $targetAttributes = $this->helper->getProductImageAnalysisAttributes();
+        $prompt = $this->buildPrompt($product, $targetAttributes);
 
         return $this->json->serialize([
             'model' => $this->helper->getModel(),
-            'temperature' => min(1, $this->helper->getTemperature()),
+            'temperature' => $this->helper->getProductImageAnalysisTemperature(),
             'max_tokens' => $this->helper->getProductImageAnalysisMaxTokens(),
+            'response_format' => [
+                'type' => 'json_schema',
+                'json_schema' => [
+                    'name' => 'product_image_analysis',
+                    'strict' => true,
+                    'schema' => $this->buildResponseSchema($targetAttributes),
+                ],
+            ],
             'messages' => [
                 ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
                 [
                     'role' => 'user',
                     'content' => [
-                        ['type' => 'text', 'text' => $prompt . $context],
+                        ['type' => 'text', 'text' => $prompt],
                         [
                             'type' => 'image_url',
                             'image_url' => [
@@ -137,7 +149,7 @@ class ImageAnalyzer
     /**
      * Parse and validate the AI response.
      *
-     * @return array{title: string, description: string, primary_keywords: string[], secondary_keywords: string[], tertiary_keywords: string[]}
+     * @return array<string, mixed>
      * @throws QueryException
      */
     private function validateResponse(): array
@@ -161,13 +173,81 @@ class ImageAnalyzer
         }
 
         $data = $this->parseJsonObject($content);
+        return isset($data['attributes']) && is_array($data['attributes']) ? $data['attributes'] : $data;
+    }
+
+    /**
+     * Build full user prompt including target instructions and existing values.
+     *
+     * @param ProductInterface $product
+     * @param array<string, string> $targetAttributes
+     * @return string
+     */
+    private function buildPrompt(ProductInterface $product, array $targetAttributes): string
+    {
+        $lines = [];
+        $lines[] = $this->helper->getProductImageAnalysisPrompt();
+        $lines[] = '';
+        $lines[] = 'Target attributes to generate:';
+
+        foreach ($targetAttributes as $code => $instruction) {
+            $attribute = $this->getAttribute($code);
+            $lines[] = sprintf(
+                '- %s (%s, input: %s): %s',
+                $code,
+                $attribute ? (string) $attribute->getDefaultFrontendLabel() : $code,
+                $attribute ? (string) $attribute->getFrontendInput() : 'text',
+                $instruction
+            );
+        }
+
+        $lines[] = '';
+        $lines[] = 'Existing product context. Use these values when helpful, especially when generating one blank field from other populated fields:';
+        $lines[] = '- sku: ' . (string) $product->getSku();
+
+        foreach ($targetAttributes as $code => $instruction) {
+            $lines[] = sprintf('- current %s: %s', $code, $this->getProductAttributeText($product, $code));
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Build JSON schema for configured target attributes.
+     *
+     * @param array<string, string> $targetAttributes
+     * @return array<string, mixed>
+     */
+    private function buildResponseSchema(array $targetAttributes): array
+    {
+        $properties = [];
+        $required = [];
+
+        foreach ($targetAttributes as $code => $instruction) {
+            $attribute = $this->getAttribute($code);
+            $input = $attribute ? (string) $attribute->getFrontendInput() : 'text';
+            $required[] = $code;
+
+            if ($input === 'multiselect') {
+                $properties[$code] = [
+                    'type' => 'array',
+                    'description' => $instruction,
+                    'items' => ['type' => 'string'],
+                ];
+                continue;
+            }
+
+            $properties[$code] = [
+                'type' => 'string',
+                'description' => $instruction,
+            ];
+        }
 
         return [
-            'title' => trim((string) ($data['title'] ?? '')),
-            'description' => trim((string) ($data['description'] ?? '')),
-            'primary_keywords' => $this->normalizeKeywords($data['primary_keywords'] ?? []),
-            'secondary_keywords' => $this->normalizeKeywords($data['secondary_keywords'] ?? []),
-            'tertiary_keywords' => $this->normalizeKeywords($data['tertiary_keywords'] ?? []),
+            'type' => 'object',
+            'additionalProperties' => false,
+            'properties' => $properties,
+            'required' => $required,
         ];
     }
 
@@ -204,28 +284,42 @@ class ImageAnalyzer
     }
 
     /**
-     * Normalize keyword response to a de-duplicated string list.
+     * Get attribute metadata by code.
      *
-     * @param mixed $value
-     * @return string[]
+     * @param string $code
+     * @return \Magento\Catalog\Api\Data\ProductAttributeInterface|null
      */
-    private function normalizeKeywords($value): array
+    private function getAttribute(string $code)
     {
-        if (is_string($value)) {
-            $value = explode(',', $value);
+        try {
+            return $this->attributeRepository->get($code);
+        } catch (\Exception $e) {
+            return null;
         }
-        if (!is_array($value)) {
-            return [];
+    }
+
+    /**
+     * Render a product attribute value as prompt context.
+     *
+     * @param ProductInterface $product
+     * @param string $code
+     * @return string
+     */
+    private function getProductAttributeText(ProductInterface $product, string $code): string
+    {
+        $attribute = $this->getAttribute($code);
+        if (!$attribute) {
+            return trim(strip_tags((string) $product->getData($code)));
         }
 
-        $keywords = [];
-        foreach ($value as $keyword) {
-            $keyword = trim((string) $keyword);
-            if ($keyword !== '') {
-                $keywords[strtolower($keyword)] = $keyword;
+        try {
+            $value = $attribute->getFrontend()->getValue($product);
+            if (is_array($value)) {
+                $value = implode(', ', $value);
             }
+            return trim(strip_tags((string) $value));
+        } catch (\Exception $e) {
+            return trim(strip_tags((string) $product->getData($code)));
         }
-
-        return array_values($keywords);
     }
 }

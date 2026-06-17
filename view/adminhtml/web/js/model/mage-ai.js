@@ -41,20 +41,17 @@ define([
         },
 
         /**
-         * Adds a product-edit button for regenerating metadata from the saved image.
+         * Adds an Images-section button for analyzing the saved product image.
+         *
+         * @param {HTMLElement|jQuery} anchorButton
          */
-        addImageMetadataButton: function () {
-            var $target;
+        addImageMetadataButton: function (anchorButton) {
+            var $anchor = $(anchorButton || '#mp-modify-image-btn');
 
             if ($(this.options.imageMetadataBtnSelector).length) {
                 return;
             }
-
-            $target = $('.page-actions .page-actions-buttons').first();
-            if (!$target.length) {
-                $target = $('.page-actions').first();
-            }
-            if (!$target.length) {
+            if (!$anchor.length) {
                 return;
             }
 
@@ -62,8 +59,9 @@ define([
                 type: 'button',
                 id: this.options.imageMetadataBtnSelector.replace('#', ''),
                 class: 'action-default scalable action-secondary',
-                text: $.mage.__('Regenerate Title, Description & Keywords from Image')
-            }).appendTo($target);
+                title: $.mage.__('Analyze Images with MageAI and update content')
+            }).html('<span>' + $.mage.__('Analyze Images with MageAI and update content') + '</span>')
+                .insertAfter($anchor);
         },
 
         /**
@@ -263,7 +261,7 @@ define([
         },
 
         /**
-         * Generates product title, description and keyword tiers from the saved image.
+         * Generates configured product attributes from the saved image.
          *
          * @returns {jQuery.Deferred}
          */
@@ -274,7 +272,7 @@ define([
             if (!productId) {
                 alert({
                     title: $.mage.__('Save Product First'),
-                    content: $.mage.__('Please save the product before regenerating metadata from its image.')
+                    content: $.mage.__('Please save the product before analyzing its image.')
                 });
                 deferred.resolve(false);
                 return deferred.promise();
@@ -310,27 +308,50 @@ define([
         },
 
         /**
-         * Applies generated image metadata to the product edit form.
+         * Applies generated image-analysis attributes to the product edit form.
          *
          * @param {Object} data
          */
         applyImageMetadata: function (data) {
-            if (data.title) {
-                $('[name="product[name]"]').val(data.title).trigger('change');
-            }
+            $.each(data.options || {}, function (attributeCode, options) {
+                mageAI.setAttributeOptions(attributeCode, options);
+            });
 
-            if (data.description) {
-                this.setHtmlField('description', data.description);
-            }
-
-            $.each(data.keyword_options || {}, function (attributeCode, options) {
-                mageAI.setMultiselectOptions(attributeCode, options, (data.keywords || {})[attributeCode] || []);
+            $.each(data.fields || {}, function (attributeCode, value) {
+                mageAI.setAttributeField(attributeCode, value);
             });
 
             alert({
                 title: $.mage.__('MageAI Metadata Generated'),
-                content: $.mage.__('Title, description, and keyword fields were updated. Review and save the product to keep the changes.')
+                content: $.mage.__('Configured product attributes were updated. Review and save the product to keep the changes.')
             });
+        },
+
+        /**
+         * Updates a product form field for any supported frontend input.
+         *
+         * @param {String} code
+         * @param {String|Array} value
+         */
+        setAttributeField: function (code, value) {
+            var $field = $('[name="product[' + code + '][]"], [name="product[' + code + ']"]').first();
+
+            if (!$field.length) {
+                this.setHtmlField(code, value);
+                return;
+            }
+
+            if ($field.is('select')) {
+                $field.val($.isArray(value) ? $.map(value, String) : String(value)).trigger('change');
+                return;
+            }
+
+            if ($field.is('textarea')) {
+                this.setHtmlField(code, $.isArray(value) ? value.join(', ') : String(value));
+                return;
+            }
+
+            $field.val($.isArray(value) ? value.join(', ') : String(value)).trigger('change');
         },
 
         /**
@@ -343,6 +364,8 @@ define([
             var fieldId = 'product_form_' + code;
             var $textarea = $('#' + fieldId + ', [name="product[' + code + ']"]').first();
 
+            value = $.isArray(value) ? value.join(', ') : String(value);
+
             if (typeof tinymce !== 'undefined' && tinymce.get(fieldId)) {
                 tinymce.get(fieldId).setContent(value);
             }
@@ -353,13 +376,12 @@ define([
         },
 
         /**
-         * Ensures option elements exist, then selects generated multiselect values.
+         * Ensures generated select/multiselect option elements exist.
          *
          * @param {String} attributeCode
          * @param {Array} options
-         * @param {Array} values
          */
-        setMultiselectOptions: function (attributeCode, options, values) {
+        setAttributeOptions: function (attributeCode, options) {
             var $field = $('[name="product[' + attributeCode + '][]"], [name="product[' + attributeCode + ']"]').first();
 
             if (!$field.length) {
@@ -375,10 +397,6 @@ define([
                     }));
                 }
             });
-
-            $field.val($.map(values || [], function (value) {
-                return String(value);
-            })).trigger('change');
         }
     };
 

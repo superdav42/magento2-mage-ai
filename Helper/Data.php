@@ -53,6 +53,8 @@ class Data extends AbstractHelper
     public const XML_PATH_GEMINI_IMAGE_MODEL = 'mageai/image_generation/gemini_image_model';
     public const XML_PATH_IMAGE_ANALYSIS_PROMPT = 'mageai/product_image_analysis/prompt';
     public const XML_PATH_IMAGE_ANALYSIS_MAX_TOKENS = 'mageai/product_image_analysis/max_tokens';
+    public const XML_PATH_IMAGE_ANALYSIS_TEMPERATURE = 'mageai/product_image_analysis/temperature';
+    public const XML_PATH_IMAGE_ANALYSIS_ATTRIBUTES = 'mageai/product_image_analysis/attributes';
 
     /**
      * Get config value
@@ -361,5 +363,54 @@ class Data extends AbstractHelper
     public function getProductImageAnalysisMaxTokens(): int
     {
         return (int) ($this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_MAX_TOKENS) ?: 1200);
+    }
+
+    /**
+     * Get sampling temperature dedicated to product image analysis.
+     *
+     * Defaults to 0 for deterministic catalog metadata generation.
+     *
+     * @return float
+     */
+    public function getProductImageAnalysisTemperature(): float
+    {
+        $value = $this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_TEMPERATURE);
+        return $value === null || $value === '' ? 0.0 : (float) $value;
+    }
+
+    /**
+     * Get configured image-analysis target attributes and their prompt instructions.
+     *
+     * @return array<string, string> Attribute code => instruction
+     */
+    public function getProductImageAnalysisAttributes(): array
+    {
+        $configured = $this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_ATTRIBUTES);
+        $attributes = [];
+
+        if (is_array($configured)) {
+            foreach ($configured as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $code = trim((string) ($row['attribute'] ?? ''));
+                $instruction = trim((string) ($row['instruction'] ?? ''));
+                if ($code !== '' && $code !== '__empty' && $instruction !== '') {
+                    $attributes[$code] = $instruction;
+                }
+            }
+        }
+
+        if (!empty($attributes)) {
+            return $attributes;
+        }
+
+        return [
+            'name' => 'Generate a short, natural, descriptive product title based on the visible image content. Do not keyword-stuff.',
+            'description' => 'Generate one clear ecommerce product description paragraph, 80-180 words. Use the image as the primary source and use any existing title or keywords as supporting context only when helpful.',
+            'keywords' => 'Generate the strongest primary catalog/search keywords as concise phrases. Return an array of 3-8 phrases.',
+            'secondary_keywords' => 'Generate supporting subject, setting, style, season, emotion, and usage keywords. Return an array of 5-12 phrases.',
+            'tertiary_keywords' => 'Generate additional related search terms. Return an array of 5-15 phrases.',
+        ];
     }
 }

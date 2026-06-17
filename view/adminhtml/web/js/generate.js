@@ -10,8 +10,6 @@ define([
          * Initializes event listeners for generating product descriptions.
          */
         _create: function () {
-            mageAIModel.addImageMetadataButton();
-
             // Listen for click events on the standard generate button
             $(document).on('click', mageAIModel.options.generateBtnSelector, function () {
                 var currentTarget = this;

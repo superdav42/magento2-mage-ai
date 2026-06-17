@@ -210,11 +210,22 @@
                 <label>Product Image Analysis</label>
                 <field id="prompt" translate="label" type="textarea" sortOrder="10" showInDefault="1" showInStore="1" showInWebsite="1" canRestore="1">
                     <label>Image Metadata Prompt</label>
-                    <comment><![CDATA[Used by <code>bin/magento mageai:generate:image-metadata</code>. The product's image is sent to the configured OpenAI-compatible chat completions endpoint. Return JSON with title, description, primary_keywords, secondary_keywords and tertiary_keywords.]]></comment>
+                    <comment><![CDATA[Used by <code>bin/magento mageai:generate:image-metadata</code> and the admin product edit image-analysis button. The product's image is sent to the configured OpenAI-compatible chat completions endpoint. Attribute-specific JSON output instructions are built from the rows below.]]></comment>
                 </field>
                 <field id="max_tokens" translate="label" type="text" sortOrder="20" showInDefault="1" canRestore="1">
                     <label>Image Analysis Max Tokens</label>
                     <validate>required-entry validate-digits validate-greater-than-zero</validate>
+                </field>
+                <field id="temperature" translate="label" type="text" sortOrder="30" showInDefault="1" canRestore="1">
+                    <label>Image Analysis Temperature</label>
+                    <comment>Sampling temperature for image analysis only. Use 0 for deterministic catalog metadata.</comment>
+                    <validate>required-entry validate-number</validate>
+                </field>
+                <field id="attributes" translate="label" sortOrder="40" showInDefault="1" canRestore="1">
+                    <label>Update These Attributes Based on Product Image Analysis</label>
+                    <frontend_model>Mageprince\MageAI\Block\Adminhtml\System\Config\Form\Field\ImageAnalysisAttributes</frontend_model>
+                    <backend_model>Magento\Config\Model\Config\Backend\Serialized\ArraySerialized</backend_model>
+                    <comment><![CDATA[Add one row per product attribute to update. The prompt description is included in the structured-output schema for that specific attribute, so title, meta title, description, and keyword attributes can each be generated differently. Existing values for these attributes are also included as context, so empty fields can be generated using populated title/keyword/description fields.]]></comment>
                 </field>
             </group>
         </section>

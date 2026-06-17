@@ -95,13 +95,13 @@ class GenerateImageMetadataCommand extends Command
     protected function configure(): void
     {
         $this->setName('mageai:generate:image-metadata');
-        $this->setDescription('Generate product title, description, and keyword tiers from product images using an OpenAI-compatible endpoint.');
+        $this->setDescription('Generate configured product attributes from product images using an OpenAI-compatible endpoint.');
         $this->addOption(self::OPTION_PRODUCT_ID, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product ID(s) to process.');
         $this->addOption(self::OPTION_SKU, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product SKU(s) to process.');
         $this->addOption(self::OPTION_LIMIT, null, InputOption::VALUE_OPTIONAL, 'Maximum products to process when no product-id/sku filter is supplied.', 50);
         $this->addOption(self::OPTION_TYPE, null, InputOption::VALUE_OPTIONAL, 'Product type to process when no product-id/sku filter is supplied. Use empty string for all types.', 'image');
-        $this->addOption(self::OPTION_FORCE, 'f', InputOption::VALUE_NONE, 'Overwrite existing title, description, and keyword tiers.');
-        $this->addOption(self::OPTION_DRY_RUN, null, InputOption::VALUE_NONE, 'Analyze and report changes without saving products or creating keyword options.');
+        $this->addOption(self::OPTION_FORCE, 'f', InputOption::VALUE_NONE, 'Overwrite existing configured image-analysis attributes.');
+        $this->addOption(self::OPTION_DRY_RUN, null, InputOption::VALUE_NONE, 'Analyze and report changes without saving products or creating attribute options.');
     }
 
     /**
@@ -205,7 +205,10 @@ class GenerateImageMetadataCommand extends Command
     private function getProductIds(array $productIds, array $skus, string $type, int $limit): array
     {
         $collection = $this->collectionFactory->create();
-        $collection->addAttributeToSelect(['name', 'description', 'image', 'small_image', 'thumbnail', 'keywords', 'secondary_keywords', 'tertiary_keywords']);
+        $collection->addAttributeToSelect(array_unique(array_merge(
+            ['name', 'image', 'small_image', 'thumbnail'],
+            array_keys($this->helper->getProductImageAnalysisAttributes())
+        )));
 
         if (!empty($productIds)) {
             $collection->addFieldToFilter('entity_id', ['in' => $productIds]);
