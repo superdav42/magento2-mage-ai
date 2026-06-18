@@ -165,6 +165,11 @@ class ImageReader
                 continue;
             }
 
+            $extension = strtolower((string) pathinfo($linkFile, PATHINFO_EXTENSION));
+            if (!in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'avif'], true)) {
+                continue;
+            }
+
             $files[] = $this->downloadableFile->getFilePath($this->downloadableLink->getBasePath(), $linkFile);
         }
 
