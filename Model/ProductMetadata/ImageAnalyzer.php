@@ -168,7 +168,9 @@ class ImageAnalyzer
     private function buildOllamaPayload(ProductInterface $product, string $imageData): string
     {
         $targetAttributes = $this->helper->getProductImageAnalysisAttributeConfig();
+        $schema = $this->buildResponseSchema($targetAttributes);
         $prompt = $this->buildPrompt($product, $targetAttributes);
+        $prompt = $this->appendResponseSchemaToPrompt($prompt, $schema);
 
         return $this->json->serialize([
             'model' => $this->helper->getOllamaModel(),
@@ -180,13 +182,26 @@ class ImageAnalyzer
                     'images' => [base64_encode($imageData)],
                 ],
             ],
-            'format' => $this->buildResponseSchema($targetAttributes),
+            'format' => $schema,
             'options' => [
                 'temperature' => $this->helper->getProductImageAnalysisTemperature(),
                 'num_predict' => $this->helper->getProductImageAnalysisMaxTokens(),
             ],
             'stream' => false,
         ]);
+    }
+
+    /**
+     * Add the response schema to the prompt for Ollama structured-output grounding.
+     *
+     * @param string $prompt
+     * @param array<string, mixed> $schema
+     * @return string
+     */
+    private function appendResponseSchemaToPrompt(string $prompt, array $schema): string
+    {
+        return $prompt . "\n\nReturn one JSON object that matches this JSON Schema exactly. Do not include markdown or explanatory text:\n"
+            . $this->json->serialize($schema);
     }
 
     /**
