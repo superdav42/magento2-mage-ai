@@ -18,7 +18,7 @@ use Mageprince\MageAI\Model\Query\QueryException;
 
 class ImageAnalyzer
 {
-    private const SYSTEM_PROMPT = 'You analyze product images for ecommerce catalog metadata. Return only valid JSON. Do not use markdown, explanations, or code fences.';
+    private const SYSTEM_PROMPT = 'You analyze Christian art product images for ecommerce catalog metadata. Return only valid JSON. Be specific to the visible Biblical subject, event, people, setting, symbols, and ministry use. Avoid generic filler, generic emotions, bare colors, counts, and media words unless central to the image. Do not use markdown, explanations, or code fences.';
 
     /**
      * @var Curl
@@ -205,6 +205,16 @@ class ImageAnalyzer
         }
 
         $lines[] = '';
+        $lines[] = 'Quality rules:';
+        $lines[] = '- Prefer specific Biblical subjects, named figures, events, places, symbols, doctrine, season, and ministry/worship use cases.';
+        $lines[] = '- Primary keywords must be the main searchable subjects or story terms, not colors, numbers, moods, style labels, or generic product/media words.';
+        $lines[] = '- Avoid generic keyword labels such as art, image, picture, painting, scene, abstract, modern, good, beautiful, happy, people, person, blue, red, green, purple, yellow, orange, black, white, one, two, three, four, 2nd, or second.';
+        $lines[] = '- Descriptions must identify what is visibly happening and should not use vague filler like beautiful image, powerful artwork, inspiring scene, or perfect for any use.';
+        $lines[] = '- Do not invent people, locations, objects, scripture references, or doctrine that are not visible or strongly supported by the existing product context.';
+        $lines[] = '- If the existing title names the Biblical event or subject, preserve that meaning and use it to improve missing SEO fields.';
+        $lines[] = '- Return empty arrays for keyword fields when no specific non-generic terms can be justified.';
+
+        $lines[] = '';
         $lines[] = 'Existing product context. Use these values when helpful, especially when generating one blank field from other populated fields:';
         $lines[] = '- sku: ' . (string) $product->getSku();
 
@@ -328,7 +338,7 @@ class ImageAnalyzer
         }
 
         if ($allowNewOptions) {
-            return ' You may return concise new option labels when the existing options do not cover the image.';
+            return ' You may return concise new option labels when existing options do not cover the image. Use specific subject phrases only; avoid generic colors, counts, moods, media words, and style labels.';
         }
 
         $labels = $this->getOptionLabels($attribute);

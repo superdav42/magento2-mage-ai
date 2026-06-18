@@ -68,6 +68,92 @@ class MetadataApplier
     protected $attributeLabels = [];
 
     /**
+     * @var string
+     */
+    private $keywordContext = '';
+
+    /**
+     * @var array<string, bool>
+     */
+    private const KEYWORD_ATTRIBUTE_CODES = [
+        'keywords' => true,
+        'secondary_keywords' => true,
+        'tertiary_keywords' => true,
+    ];
+
+    /**
+     * @var array<string, int>
+     */
+    private const MAX_GENERATED_KEYWORD_LABELS = [
+        'keywords' => 8,
+        'secondary_keywords' => 12,
+        'tertiary_keywords' => 15,
+    ];
+
+    /**
+     * @var array<string, bool>
+     */
+    private const GENERIC_KEYWORD_LABELS = [
+        'abstract' => true,
+        'art' => true,
+        'artwork' => true,
+        'beautiful' => true,
+        'black' => true,
+        'blue' => true,
+        'brown' => true,
+        'child' => true,
+        'children' => true,
+        'colorful' => true,
+        'four' => true,
+        'girl' => true,
+        'good' => true,
+        'gray' => true,
+        'green' => true,
+        'grey' => true,
+        'group' => true,
+        'happy' => true,
+        'happiness' => true,
+        'image' => true,
+        'illustration' => true,
+        'inspiring' => true,
+        'joyful' => true,
+        'joyous' => true,
+        'magenta' => true,
+        'modern' => true,
+        'nice' => true,
+        'orange' => true,
+        'painting' => true,
+        'people' => true,
+        'person' => true,
+        'picture' => true,
+        'purple' => true,
+        'red' => true,
+        'scene' => true,
+        'second' => true,
+        'style' => true,
+        'white' => true,
+        'woman' => true,
+        'yellow' => true,
+        'atmosphere' => true,
+        'silhouetteart' => true,
+        'silhoutteart' => true,
+        'worshipful atmosphere' => true,
+    ];
+
+    /**
+     * @var string[]
+     */
+    private const GENERIC_KEYWORD_PATTERNS = [
+        '/^[0-9]+$/',
+        '/^[0-9]+(?:st|nd|rd|th)$/i',
+        '/^[0-9]{1,2}:[0-9]{2}\s*(?:am|pm)?$/i',
+        '/^(?:one|two|three|four|five|six|seven|eight|nine|ten)$/i',
+        '/^(?:aries|taurus|gemini|cancer|leo|virgo|libra|scorpio|sagittarius|capricorn|aquarius|pisces)$/i',
+        '/\batmosphere\b/i',
+        '/^tide of\b/i',
+    ];
+
+    /**
      * @param ProductAttributeRepositoryInterface $attributeRepository
      * @param TableFactory $tableFactory
      * @param AttributeOptionLabelInterfaceFactory $optionLabelFactory
@@ -103,16 +189,22 @@ class MetadataApplier
     public function apply(ProductInterface $product, array $metadata, bool $force = false, bool $dryRun = false): array
     {
         $changes = [];
+        $previousKeywordContext = $this->keywordContext;
+        $this->keywordContext = $this->buildKeywordContext($product, $metadata);
 
-        $configs = $this->helper->getProductImageAnalysisAttributeConfig();
-        foreach ($configs as $attributeCode => $config) {
-            if (!array_key_exists($attributeCode, $metadata)) {
-                continue;
+        try {
+            $configs = $this->helper->getProductImageAnalysisAttributeConfig();
+            foreach ($configs as $attributeCode => $config) {
+                if (!array_key_exists($attributeCode, $metadata)) {
+                    continue;
+                }
+                $this->applyAttribute($product, $attributeCode, $metadata[$attributeCode], $config, $force, $dryRun, $changes);
             }
-            $this->applyAttribute($product, $attributeCode, $metadata[$attributeCode], $config, $force, $dryRun, $changes);
-        }
 
-        $this->dedupePromotedMultiselectValues($product, $configs, $dryRun, $changes);
+            $this->dedupePromotedMultiselectValues($product, $configs, $dryRun, $changes);
+        } finally {
+            $this->keywordContext = $previousKeywordContext;
+        }
 
         return $changes;
     }
@@ -132,38 +224,44 @@ class MetadataApplier
     {
         $fields = [];
         $options = [];
+        $previousKeywordContext = $this->keywordContext;
+        $this->keywordContext = $this->buildKeywordContext($product, $metadata);
 
-        $configs = $this->helper->getProductImageAnalysisAttributeConfig();
-        foreach ($configs as $attributeCode => $config) {
-            if (!array_key_exists($attributeCode, $metadata)) {
-                continue;
-            }
-
-            if (!$this->canUpdateAttribute($product, $attributeCode, $force, $config['policy'])) {
-                continue;
-            }
-
-            $attribute = $this->getAttribute($attributeCode);
-            $input = (string) $attribute->getFrontendInput();
-
-            if ($input === 'multiselect' || $input === 'select') {
-                $attributeOptions = $this->createAttributeOptions($attributeCode, $metadata[$attributeCode], (bool) $config['allow_new_options']);
-                if (empty($attributeOptions)) {
+        try {
+            $configs = $this->helper->getProductImageAnalysisAttributeConfig();
+            foreach ($configs as $attributeCode => $config) {
+                if (!array_key_exists($attributeCode, $metadata)) {
                     continue;
                 }
-                $options[$attributeCode] = $attributeOptions;
-                $ids = array_column($attributeOptions, 'id');
-                $fieldValue = $this->getOptionFieldValue($product, $attributeCode, $input, $ids, $config['policy'], $force);
-                $fields[$attributeCode] = $input === 'multiselect'
-                    ? $this->splitOptionValue($fieldValue)
-                    : $fieldValue;
-                continue;
+
+                if (!$this->canUpdateConfiguredAttribute($product, $attributeCode, $force, $config['policy'])) {
+                    continue;
+                }
+
+                $attribute = $this->getAttribute($attributeCode);
+                $input = (string) $attribute->getFrontendInput();
+
+                if ($input === 'multiselect' || $input === 'select') {
+                    $attributeOptions = $this->createAttributeOptions($attributeCode, $metadata[$attributeCode], (bool) $config['allow_new_options']);
+                    if (empty($attributeOptions)) {
+                        continue;
+                    }
+                    $options[$attributeCode] = $attributeOptions;
+                    $ids = array_column($attributeOptions, 'id');
+                    $fieldValue = $this->getOptionFieldValue($product, $attributeCode, $input, $ids, $config['policy'], $force);
+                    $fields[$attributeCode] = $input === 'multiselect'
+                        ? $this->splitOptionValue($fieldValue)
+                        : $fieldValue;
+                    continue;
+                }
+
+                $fields[$attributeCode] = $this->normalizeScalarValue($metadata[$attributeCode]);
             }
 
-            $fields[$attributeCode] = $this->normalizeScalarValue($metadata[$attributeCode]);
+            $this->dedupePromotedFormValues($product, $configs, $fields);
+        } finally {
+            $this->keywordContext = $previousKeywordContext;
         }
-
-        $this->dedupePromotedFormValues($product, $configs, $fields);
 
         return [
             'fields' => $fields,
@@ -180,7 +278,7 @@ class MetadataApplier
     public function hasGeneratedMetadata(ProductInterface $product): bool
     {
         foreach ($this->helper->getProductImageAnalysisAttributeConfig() as $attributeCode => $config) {
-            if ($this->canUpdateAttribute($product, $attributeCode, false, $config['policy'])) {
+            if ($this->canUpdateConfiguredAttribute($product, $attributeCode, false, $config['policy'])) {
                 return false;
             }
         }
@@ -209,7 +307,7 @@ class MetadataApplier
         bool $dryRun,
         array &$changes
     ): void {
-        if (!$this->canUpdateAttribute($product, $attributeCode, $force, $config['policy'])) {
+        if (!$this->canUpdateConfiguredAttribute($product, $attributeCode, $force, $config['policy'])) {
             return;
         }
 
@@ -265,7 +363,7 @@ class MetadataApplier
     private function createAttributeOptions(string $attributeCode, $values, bool $allowCreate): array
     {
         $options = [];
-        foreach ($this->normalizeListValue($values) as $label) {
+        foreach ($this->normalizeListValue($values, $attributeCode) as $label) {
             $optionId = $this->createOrGetOptionId($attributeCode, $label, $allowCreate);
             if ($optionId) {
                 $options[(string) $optionId] = ['id' => $optionId, 'label' => $label];
@@ -419,7 +517,7 @@ class MetadataApplier
         array $config,
         bool $force
     ): array {
-        $labels = $this->normalizeListValue($value);
+        $labels = $this->normalizeListValue($value, $attributeCode);
         if (empty($labels)) {
             return [];
         }
@@ -673,9 +771,10 @@ class MetadataApplier
      * Normalize a generated list value.
      *
      * @param mixed $values
+     * @param string $attributeCode
      * @return string[]
      */
-    private function normalizeListValue($values): array
+    private function normalizeListValue($values, string $attributeCode = ''): array
     {
         if (is_string($values)) {
             $values = explode(',', $values);
@@ -692,7 +791,217 @@ class MetadataApplier
             }
         }
 
-        return array_values($normalized);
+        $labels = $this->filterGeneratedKeywordLabels($attributeCode, array_values($normalized));
+        return $this->limitGeneratedKeywordLabels($attributeCode, $labels);
+    }
+
+    /**
+     * Remove generic generated keyword labels before creating or merging options.
+     *
+     * @param string $attributeCode
+     * @param string[] $labels
+     * @return string[]
+     */
+    private function filterGeneratedKeywordLabels(string $attributeCode, array $labels): array
+    {
+        if (!isset(self::KEYWORD_ATTRIBUTE_CODES[$attributeCode])) {
+            return $labels;
+        }
+
+        $filtered = [];
+        foreach ($labels as $label) {
+            $label = $this->normalizeKeywordLabel($label);
+            if ($label === '' || $this->isGenericKeywordLabel($label) || !$this->isKeywordLabelSupportedByContext($label)) {
+                continue;
+            }
+            $filtered[strtolower($label)] = $label;
+        }
+
+        return array_values($filtered);
+    }
+
+    /**
+     * Limit generated keyword labels so noisy model output cannot swamp curated data.
+     *
+     * @param string $attributeCode
+     * @param string[] $labels
+     * @return string[]
+     */
+    private function limitGeneratedKeywordLabels(string $attributeCode, array $labels): array
+    {
+        if (!isset(self::MAX_GENERATED_KEYWORD_LABELS[$attributeCode])) {
+            return $labels;
+        }
+
+        return array_slice($labels, 0, self::MAX_GENERATED_KEYWORD_LABELS[$attributeCode]);
+    }
+
+    /**
+     * Normalize one generated keyword label before filtering and option lookup.
+     *
+     * @param string $label
+     * @return string
+     */
+    private function normalizeKeywordLabel(string $label): string
+    {
+        $label = trim(strip_tags($label));
+        $label = preg_replace('/\s+/', ' ', $label);
+        $label = trim((string) $label, " \t\n\r\0\x0B,.;:!?\"'()[]{}");
+
+        return $label;
+    }
+
+    /**
+     * Determine whether a generated keyword label is too generic to be useful.
+     *
+     * @param string $label
+     * @return bool
+     */
+    private function isGenericKeywordLabel(string $label): bool
+    {
+        $normalized = strtolower($label);
+        if (isset(self::GENERIC_KEYWORD_LABELS[$normalized])) {
+            return true;
+        }
+
+        foreach (self::GENERIC_KEYWORD_PATTERNS as $pattern) {
+            if (preg_match($pattern, $label) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Build scalar text context used to reject unsupported generated keyword labels.
+     *
+     * @param ProductInterface $product
+     * @param array<string, mixed> $metadata
+     * @return string
+     */
+    private function buildKeywordContext(ProductInterface $product, array $metadata): string
+    {
+        $parts = [];
+        foreach (['name', 'description', 'short_description', 'meta_title', 'meta_description', 'meta_keyword'] as $attributeCode) {
+            if (array_key_exists($attributeCode, $metadata)) {
+                $parts[] = $this->flattenKeywordContextValue($metadata[$attributeCode]);
+            }
+            $parts[] = $this->flattenKeywordContextValue($product->getData($attributeCode));
+        }
+
+        $context = strtolower(trim(strip_tags(implode(' ', $parts))));
+        $context = preg_replace('/\s+/', ' ', $context);
+
+        return (string) $context;
+    }
+
+    /**
+     * Flatten a scalar or nested generated value for keyword context matching.
+     *
+     * @param mixed $value
+     * @return string
+     */
+    private function flattenKeywordContextValue($value): string
+    {
+        if (is_array($value)) {
+            return implode(' ', array_map(function ($item) {
+                return $this->flattenKeywordContextValue($item);
+            }, $value));
+        }
+
+        return trim(strip_tags((string) $value));
+    }
+
+    /**
+     * Require generated keyword labels to be supported by generated scalar metadata.
+     *
+     * @param string $label
+     * @return bool
+     */
+    private function isKeywordLabelSupportedByContext(string $label): bool
+    {
+        if ($this->keywordContext === '') {
+            return true;
+        }
+
+        $words = $this->getKeywordLabelWords($label);
+        if (empty($words)) {
+            return false;
+        }
+
+        foreach ($words as $word) {
+            if ($this->keywordContextContainsWord($word)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Extract meaningful words from one keyword label.
+     *
+     * @param string $label
+     * @return string[]
+     */
+    private function getKeywordLabelWords(string $label): array
+    {
+        $words = preg_split('/[^a-z0-9]+/i', strtolower($label)) ?: [];
+        $stopWords = [
+            'a' => true,
+            'an' => true,
+            'and' => true,
+            'as' => true,
+            'at' => true,
+            'by' => true,
+            'for' => true,
+            'from' => true,
+            'in' => true,
+            'into' => true,
+            'of' => true,
+            'on' => true,
+            'or' => true,
+            'the' => true,
+            'to' => true,
+            'under' => true,
+            'with' => true,
+        ];
+
+        $meaningful = [];
+        foreach ($words as $word) {
+            $word = trim($word);
+            if (strlen($word) < 3 || isset($stopWords[$word])) {
+                continue;
+            }
+            $meaningful[$word] = $word;
+        }
+
+        return array_values($meaningful);
+    }
+
+    /**
+     * Check keyword context for singular or plural forms of a word.
+     *
+     * @param string $word
+     * @return bool
+     */
+    private function keywordContextContainsWord(string $word): bool
+    {
+        $forms = [$word];
+        if (strlen($word) > 3 && substr($word, -1) === 's') {
+            $forms[] = substr($word, 0, -1);
+        } elseif (strlen($word) > 3) {
+            $forms[] = $word . 's';
+        }
+
+        foreach (array_unique($forms) as $form) {
+            if (preg_match('/\b' . preg_quote($form, '/') . '\b/i', $this->keywordContext) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -719,7 +1028,7 @@ class MetadataApplier
      * @param string $policy
      * @return bool
      */
-    private function canUpdateAttribute(ProductInterface $product, string $attributeCode, bool $force, string $policy): bool
+    public function canUpdateConfiguredAttribute(ProductInterface $product, string $attributeCode, bool $force, string $policy): bool
     {
         if ($force) {
             return true;
