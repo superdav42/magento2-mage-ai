@@ -436,13 +436,13 @@ class MetadataApplier
             $sourceModel->setAttribute($attribute);
 
             foreach ($sourceModel->getAllOptions(true, false) as $option) {
-                $label = trim((string) $option['label']);
+                $optionLabel = trim((string) $option['label']);
                 $value = (string) $option['value'];
-                if ($label === '' || $value === '') {
+                if ($optionLabel === '' || $value === '') {
                     continue;
                 }
-                $this->attributeValues[$attributeId][strtolower($label)] = $option['value'];
-                $this->attributeLabels[$attributeId][$value] = $label;
+                $this->attributeValues[$attributeId][strtolower($optionLabel)] = $option['value'];
+                $this->attributeLabels[$attributeId][$value] = $optionLabel;
             }
         }
 

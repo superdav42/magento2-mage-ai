@@ -126,6 +126,21 @@
                         <field id="provider">gemini</field>
                     </depends>
                 </field>
+                <!-- Ollama native fields -->
+                <field id="ollama_base_url" translate="label" type="text" sortOrder="110" showInDefault="1" showInStore="1" showInWebsite="1" canRestore="1">
+                    <label>Base URL</label>
+                    <comment>Native Ollama URL, for example http://localhost:11434. Do not include /api/chat; /v1 is stripped automatically if present.</comment>
+                    <depends>
+                        <field id="provider">ollama</field>
+                    </depends>
+                </field>
+                <field id="ollama_model" translate="label" type="text" sortOrder="120" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                    <label>Model</label>
+                    <comment>Ollama model ID, for example gemma4:12b-it-qat, gemma3:latest, or qwen3-vl:latest. Product image analysis requires a vision-capable model.</comment>
+                    <depends>
+                        <field id="provider">ollama</field>
+                    </depends>
+                </field>
             </group>
             <group id="product_description" translate="label" type="text" sortOrder="30" showInDefault="1">
                 <label>Product Description Configuration</label>

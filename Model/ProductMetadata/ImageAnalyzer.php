@@ -19,6 +19,7 @@ use Mageprince\MageAI\Model\Query\QueryException;
 class ImageAnalyzer
 {
     private const SYSTEM_PROMPT = 'You analyze Christian art product images for ecommerce catalog metadata. Return only valid JSON. Be specific to the visible Biblical subject, event, people, setting, symbols, and ministry use. Avoid generic filler, generic emotions, bare colors, counts, and media words unless central to the image. Do not use markdown, explanations, or code fences.';
+    private const REQUEST_TIMEOUT = 900;
 
     /**
      * @var Curl
@@ -76,6 +77,14 @@ class ImageAnalyzer
     public function analyze(ProductInterface $product): array
     {
         $image = $this->imageReader->read($product);
+        if ($this->helper->getProvider() === 'ollama') {
+            $payload = $this->buildOllamaPayload($product, $image['data']);
+            $this->setOllamaHeaders();
+            $this->curl->post($this->helper->getOllamaEndpointUrl('/api/chat'), $payload);
+
+            return $this->validateOllamaResponse();
+        }
+
         $payload = $this->buildPayload($product, $image['data'], $image['mimeType']);
 
         $this->setHeaders();
@@ -128,6 +137,37 @@ class ImageAnalyzer
     }
 
     /**
+     * Build Ollama native /api/chat payload with schema-constrained output.
+     *
+     * @param ProductInterface $product
+     * @param string $imageData
+     * @return string
+     */
+    private function buildOllamaPayload(ProductInterface $product, string $imageData): string
+    {
+        $targetAttributes = $this->helper->getProductImageAnalysisAttributeConfig();
+        $prompt = $this->buildPrompt($product, $targetAttributes);
+
+        return $this->json->serialize([
+            'model' => $this->helper->getOllamaModel(),
+            'messages' => [
+                ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
+                [
+                    'role' => 'user',
+                    'content' => $prompt,
+                    'images' => [base64_encode($imageData)],
+                ],
+            ],
+            'format' => $this->buildResponseSchema($targetAttributes),
+            'options' => [
+                'temperature' => $this->helper->getProductImageAnalysisTemperature(),
+                'num_predict' => $this->helper->getProductImageAnalysisMaxTokens(),
+            ],
+            'stream' => false,
+        ]);
+    }
+
+    /**
      * Set OpenAI-compatible request headers.
      *
      * @return void
@@ -140,9 +180,23 @@ class ImageAnalyzer
             throw new QueryException(__('OpenAI-compatible API key not found. Please check MageAI configuration.'));
         }
 
+        $this->curl->setTimeout(self::REQUEST_TIMEOUT);
         $this->curl->setHeaders([
             'Content-Type' => 'application/json',
             'Authorization' => 'Bearer ' . $token,
+        ]);
+    }
+
+    /**
+     * Set Ollama native request headers.
+     *
+     * @return void
+     */
+    private function setOllamaHeaders(): void
+    {
+        $this->curl->setTimeout(self::REQUEST_TIMEOUT);
+        $this->curl->setHeaders([
+            'Content-Type' => 'application/json',
         ]);
     }
 
@@ -170,6 +224,33 @@ class ImageAnalyzer
         $content = $response['choices'][0]['message']['content'] ?? $response['choices'][0]['text'] ?? '';
         if (!is_string($content) || trim($content) === '') {
             throw new QueryException(__('No image metadata content was returned by the OpenAI-compatible endpoint.'));
+        }
+
+        $data = $this->parseJsonObject($content);
+        return isset($data['attributes']) && is_array($data['attributes']) ? $data['attributes'] : $data;
+    }
+
+    /**
+     * Parse and validate an Ollama native /api/chat response.
+     *
+     * @return array<string, mixed>
+     * @throws QueryException
+     */
+    private function validateOllamaResponse(): array
+    {
+        $status = $this->curl->getStatus();
+        if ($status >= 400) {
+            throw new QueryException(__('Ollama endpoint returned HTTP %1: %2', $status, $this->curl->getBody()));
+        }
+
+        $response = $this->json->unserialize($this->curl->getBody());
+        if (isset($response['error'])) {
+            throw new QueryException(__($response['error']));
+        }
+
+        $content = $response['message']['content'] ?? '';
+        if (!is_string($content) || trim($content) === '') {
+            throw new QueryException(__('No image metadata content was returned by the Ollama native endpoint.'));
         }
 
         $data = $this->parseJsonObject($content);
@@ -212,6 +293,10 @@ class ImageAnalyzer
         $lines[] = '- Descriptions must identify what is visibly happening and should not use vague filler like beautiful image, powerful artwork, inspiring scene, or perfect for any use.';
         $lines[] = '- Do not invent people, locations, objects, scripture references, or doctrine that are not visible or strongly supported by the existing product context.';
         $lines[] = '- If the existing title names the Biblical event or subject, preserve that meaning and use it to improve missing SEO fields.';
+        $lines[] = '- Return every requested schema key. Use JSON strings for scalar fields and JSON arrays for keyword fields.';
+        $lines[] = '- Do not return blank name, description, meta_title, meta_description, or meta_keyword values when the image or current product context provides enough evidence for a safe value.';
+        $lines[] = '- Keep meta_title under 60 characters when possible and meta_description under 155 characters when possible.';
+        $lines[] = '- Do not repeat the same keyword across primary, secondary, and tertiary keyword fields.';
         $lines[] = '- Return empty arrays for keyword fields when no specific non-generic terms can be justified.';
 
         $lines[] = '';
@@ -251,6 +336,8 @@ class ImageAnalyzer
                     'type' => 'array',
                     'description' => $config['instruction'],
                     'items' => $items,
+                    'uniqueItems' => true,
+                    'maxItems' => $this->getMaxItemsForAttribute($code),
                 ];
                 continue;
             }
@@ -259,6 +346,10 @@ class ImageAnalyzer
                 'type' => 'string',
                 'description' => $config['instruction'],
             ];
+            $maxLength = $this->getMaxLengthForAttribute($code);
+            if ($maxLength) {
+                $properties[$code]['maxLength'] = $maxLength;
+            }
             if ($input === 'select' && !empty($enum) && count($enum) <= 200) {
                 $properties[$code]['enum'] = $enum;
             }
@@ -270,6 +361,46 @@ class ImageAnalyzer
             'properties' => $properties,
             'required' => $required,
         ];
+    }
+
+    /**
+     * Get a safe maximum number of generated list items for known keyword attributes.
+     *
+     * @param string $code
+     * @return int
+     */
+    private function getMaxItemsForAttribute(string $code): int
+    {
+        switch ($code) {
+            case 'keywords':
+                return 8;
+            case 'secondary_keywords':
+                return 12;
+            case 'tertiary_keywords':
+                return 15;
+            default:
+                return 20;
+        }
+    }
+
+    /**
+     * Get schema max length constraints for common SEO scalar attributes.
+     *
+     * @param string $code
+     * @return int|null
+     */
+    private function getMaxLengthForAttribute(string $code): ?int
+    {
+        switch ($code) {
+            case 'meta_title':
+                return 70;
+            case 'meta_description':
+                return 180;
+            case 'meta_keyword':
+                return 255;
+            default:
+                return null;
+        }
     }
 
     /**
