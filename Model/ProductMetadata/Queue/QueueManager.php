@@ -86,11 +86,19 @@ class QueueManager
             return 0;
         }
 
+        $processingProductIds = $this->getProcessingProductIds(array_map(function (array $row): int {
+            return (int) $row['product_id'];
+        }, $rows));
         $now = $this->dateTime->gmtDate();
         $data = [];
         foreach ($rows as $row) {
+            $productId = (int) $row['product_id'];
+            if (isset($processingProductIds[$productId])) {
+                continue;
+            }
+
             $data[] = [
-                'product_id' => (int) $row['product_id'],
+                'product_id' => $productId,
                 'sku' => (string) $row['sku'],
                 'product_type' => (string) $row['product_type'],
                 'missing_score' => max(0, (int) $row['missing_score']),
@@ -102,6 +110,10 @@ class QueueManager
                 'updated_at' => $now,
                 'processed_at' => null,
             ];
+        }
+
+        if (empty($data)) {
+            return 0;
         }
 
         return $this->getConnection()->insertOnDuplicate(
@@ -212,31 +224,34 @@ class QueueManager
     /**
      * @param int $queueId
      * @param string[] $updatedFields
+     * @param string $lockedBy
      * @return int
      */
-    public function markDone(int $queueId, array $updatedFields): int
+    public function markDone(int $queueId, array $updatedFields, string $lockedBy): int
     {
-        return $this->markTerminal($queueId, self::STATUS_DONE, null, $updatedFields);
+        return $this->markTerminal($queueId, self::STATUS_DONE, null, $updatedFields, $lockedBy);
     }
 
     /**
      * @param int $queueId
      * @param string $error
+     * @param string $lockedBy
      * @return int
      */
-    public function markFailed(int $queueId, string $error): int
+    public function markFailed(int $queueId, string $error, string $lockedBy): int
     {
-        return $this->markTerminal($queueId, self::STATUS_FAILED, $error, []);
+        return $this->markTerminal($queueId, self::STATUS_FAILED, $error, [], $lockedBy);
     }
 
     /**
      * @param int $queueId
      * @param string $reason
+     * @param string $lockedBy
      * @return int
      */
-    public function markSkipped(int $queueId, string $reason = ''): int
+    public function markSkipped(int $queueId, string $reason, string $lockedBy): int
     {
-        return $this->markTerminal($queueId, self::STATUS_SKIPPED, $reason, []);
+        return $this->markTerminal($queueId, self::STATUS_SKIPPED, $reason, [], $lockedBy);
     }
 
     /**
@@ -288,7 +303,7 @@ class QueueManager
      */
     public function clear(array $productIds = []): int
     {
-        $where = [];
+        $where = ['status != ?' => self::STATUS_PROCESSING];
         if (!empty($productIds)) {
             $where['product_id IN (?)'] = array_map('intval', $productIds);
         }
@@ -372,9 +387,10 @@ class QueueManager
      * @param string $status
      * @param string|null $error
      * @param string[] $updatedFields
+     * @param string $lockedBy
      * @return int
      */
-    private function markTerminal(int $queueId, string $status, ?string $error, array $updatedFields): int
+    private function markTerminal(int $queueId, string $status, ?string $error, array $updatedFields, string $lockedBy): int
     {
         return $this->getConnection()->update(
             $this->getTableName(),
@@ -387,8 +403,38 @@ class QueueManager
                 'updated_at' => $this->dateTime->gmtDate(),
                 'processed_at' => $this->dateTime->gmtDate(),
             ],
-            ['queue_id = ?' => $queueId]
+            [
+                'queue_id = ?' => $queueId,
+                'status = ?' => self::STATUS_PROCESSING,
+                'locked_by = ?' => $lockedBy,
+            ]
         );
+    }
+
+    /**
+     * Return processing product IDs keyed by product ID so enqueue cannot steal active leases.
+     *
+     * @param int[] $productIds
+     * @return array<int, bool>
+     */
+    private function getProcessingProductIds(array $productIds): array
+    {
+        $productIds = array_values(array_unique(array_filter(array_map('intval', $productIds))));
+        if (empty($productIds)) {
+            return [];
+        }
+
+        $select = $this->getConnection()->select()
+            ->from($this->getTableName(), ['product_id'])
+            ->where('product_id IN (?)', $productIds)
+            ->where('status = ?', self::STATUS_PROCESSING);
+
+        $processing = [];
+        foreach ($this->getConnection()->fetchCol($select) as $productId) {
+            $processing[(int) $productId] = true;
+        }
+
+        return $processing;
     }
 
     /**

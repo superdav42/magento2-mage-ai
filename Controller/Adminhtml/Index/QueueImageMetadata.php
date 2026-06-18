@@ -95,6 +95,22 @@ class QueueImageMetadata extends Action implements HttpPostActionInterface
         try {
             $product = $this->productRepository->getById($productId, false, 0, true);
             $score = $this->missingDataScorer->score($product);
+            if ((int) $score['score'] <= 0 || empty($score['fields'])) {
+                return $this->resultJson->create()->setData([
+                    'error' => false,
+                    'data' => [
+                        'product_id' => $productId,
+                        'queue_id' => null,
+                        'queue_status' => null,
+                        'missing_score' => 0,
+                        'missing_fields' => [],
+                        'created' => false,
+                        'updated' => false,
+                        'affected_rows' => 0,
+                        'message' => __('No image metadata fields need generation.'),
+                    ],
+                ]);
+            }
             $existingRow = $this->queueManager->getByProductId($productId);
             $affectedRows = $this->queueManager->enqueue($product, (int) $score['score'], $score['fields']);
             $queueRow = $this->queueManager->getByProductId($productId);

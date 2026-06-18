@@ -242,6 +242,7 @@ class QueueImageMetadataCommand extends Command
                 if ($limit > 0 && $summary['scanned'] >= $limit) {
                     break;
                 }
+                $productId = (int) $product->getId();
                 $score = $this->missingDataScorer->score($product);
                 $missingScore = (int) $score['score'];
                 $missingFields = $score['fields'];
@@ -254,19 +255,23 @@ class QueueImageMetadataCommand extends Command
 
                 if ($reportHandle !== null) {
                     fputcsv($reportHandle, [
-                        (int) $product->getId(),
+                        $productId,
                         (string) $product->getSku(),
                         (string) $product->getTypeId(),
                         $missingScore,
                         implode('|', $missingFields),
-                        $statuses[(int) $product->getId()] ?? '',
+                        $statuses[$productId] ?? '',
                     ]);
                     $summary['reported']++;
                 }
 
                 if ($rebuild || $append) {
+                    if (($statuses[$productId] ?? null) === QueueManager::STATUS_PROCESSING) {
+                        continue;
+                    }
+
                     $rows[] = [
-                        'product_id' => (int) $product->getId(),
+                        'product_id' => $productId,
                         'sku' => (string) $product->getSku(),
                         'product_type' => (string) $product->getTypeId(),
                         'missing_score' => $missingScore,

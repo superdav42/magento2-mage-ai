@@ -271,14 +271,13 @@ class GenerateImageMetadataCommand extends Command
                 } else {
                     $failed++;
                 }
-
-                if ($this->isRuntimeExceeded($startedAt, $maxRuntime)) {
-                    $output->writeln('<comment>Maximum runtime reached; exiting after current product.</comment>');
-                    break 2;
-                }
             }
 
             if ($dryRun) {
+                break;
+            }
+            if ($this->isRuntimeExceeded($startedAt, $maxRuntime)) {
+                $output->writeln('<comment>Maximum runtime reached; exiting after current claimed batch.</comment>');
                 break;
             }
             if ($sleep > 0 && !$this->isRuntimeExceeded($startedAt, $maxRuntime)) {
@@ -305,6 +304,7 @@ class GenerateImageMetadataCommand extends Command
     {
         $queueId = (int) $row['queue_id'];
         $productId = (int) $row['product_id'];
+        $lockedBy = (string) ($row['locked_by'] ?? '');
         $startedAt = microtime(true);
 
         try {
@@ -316,7 +316,10 @@ class GenerateImageMetadataCommand extends Command
 
             if (empty($changes)) {
                 if (!$dryRun) {
-                    $this->queueManager->markSkipped($queueId, 'No applicable changes remain.');
+                    $this->assertQueueLeaseUpdated(
+                        $this->queueManager->markSkipped($queueId, 'No applicable changes remain.', $lockedBy),
+                        $queueId
+                    );
                 }
                 $output->writeln(sprintf('[%d] Queue #%d skipped product %d (%s) in %ss: no applicable changes.', $processed, $queueId, $productId, $product->getSku(), $duration));
                 return 'skipped';
@@ -326,15 +329,33 @@ class GenerateImageMetadataCommand extends Command
                 $this->productRepository->save($product);
                 $this->persistScalarChanges($productId, $changes);
                 $this->assertScalarChangesPersisted($productId, $changes);
-                $this->queueManager->markDone($queueId, array_keys($changes));
+                $this->assertQueueLeaseUpdated(
+                    $this->queueManager->markDone($queueId, array_keys($changes), $lockedBy),
+                    $queueId
+                );
             }
 
             $output->writeln(sprintf('[%d] Queue #%d %s product %d (%s) in %ss: %s', $processed, $queueId, $dryRun ? 'would update' : 'updated', $productId, $product->getSku(), $duration, implode(', ', array_keys($changes))));
             return 'updated';
         } catch (QueryException $e) {
-            return $this->handleQueueFailure($queueId, $productId, $processed, $output, $dryRun, $e);
+            return $this->handleQueueFailure($queueId, $productId, $lockedBy, $processed, $output, $dryRun, $e);
         } catch (\Exception $e) {
-            return $this->handleQueueFailure($queueId, $productId, $processed, $output, $dryRun, $e);
+            return $this->handleQueueFailure($queueId, $productId, $lockedBy, $processed, $output, $dryRun, $e);
+        }
+    }
+
+    /**
+     * Treat a zero-row terminal update as a lost worker lease.
+     *
+     * @param int $updatedRows
+     * @param int $queueId
+     * @return void
+     * @throws LocalizedException
+     */
+    private function assertQueueLeaseUpdated(int $updatedRows, int $queueId): void
+    {
+        if ($updatedRows <= 0) {
+            throw new LocalizedException(__('Queue row %1 lease was lost before status update.', $queueId));
         }
     }
 
@@ -410,17 +431,22 @@ class GenerateImageMetadataCommand extends Command
      *
      * @param int $queueId
      * @param int $productId
+     * @param string $lockedBy
      * @param int $processed
      * @param OutputInterface $output
      * @param bool $dryRun
      * @param \Exception $e
      * @return string
      */
-    private function handleQueueFailure(int $queueId, int $productId, int $processed, OutputInterface $output, bool $dryRun, \Exception $e): string
+    private function handleQueueFailure(int $queueId, int $productId, string $lockedBy, int $processed, OutputInterface $output, bool $dryRun, \Exception $e): string
     {
         $message = $this->summarizeError($e->getMessage());
         if (!$dryRun) {
-            $this->queueManager->markFailed($queueId, $message);
+            $updatedRows = $this->queueManager->markFailed($queueId, $message, $lockedBy);
+            if ($updatedRows <= 0) {
+                $output->writeln(sprintf('[%d] <error>Queue #%d failed product %d after its worker lease was lost: %s</error>', $processed, $queueId, $productId, $message));
+                return 'failed';
+            }
         }
         $output->writeln(sprintf('[%d] <error>Queue #%d failed product %d: %s</error>', $processed, $queueId, $productId, $message));
 

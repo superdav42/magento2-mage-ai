@@ -26,7 +26,7 @@
         <index referenceId="MAGEPRINCE_MAGEAI_IMAGE_METADATA_QUEUE_STATUS_SCORE" indexType="btree">
             <column name="status"/>
             <column name="missing_score"/>
-            <column name="updated_at"/>
+            <column name="queue_id"/>
         </index>
         <index referenceId="MAGEPRINCE_MAGEAI_IMAGE_METADATA_QUEUE_LOCK" indexType="btree">
             <column name="status"/>

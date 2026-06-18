@@ -39,6 +39,11 @@ define([
             $(document).on('click', mageAIModel.options.imageMetadataBtnSelector, function () {
                 mageAIModel.generateImageMetadata();
             });
+
+            // Listen for click events on image metadata queue button
+            $(document).on('click', mageAIModel.options.queueImageMetadataBtnSelector, function () {
+                mageAIModel.queueImageMetadata();
+            });
         }
     });
 
