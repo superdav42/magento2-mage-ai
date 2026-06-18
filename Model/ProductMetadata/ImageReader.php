@@ -11,6 +11,10 @@ namespace Mageprince\MageAI\Model\ProductMetadata;
 
 use Magento\Catalog\Api\Data\ProductInterface;
 use Magento\Catalog\Model\Product\Media\Config as MediaConfig;
+use Magento\Downloadable\Api\LinkRepositoryInterface;
+use Magento\Downloadable\Helper\Download;
+use Magento\Downloadable\Helper\File as DownloadableFile;
+use Magento\Downloadable\Model\Link as DownloadableLink;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
 use Mageprince\MageAI\Model\Query\QueryException;
@@ -28,13 +32,39 @@ class ImageReader
     protected $mediaConfig;
 
     /**
+     * @var LinkRepositoryInterface
+     */
+    protected $linkRepository;
+
+    /**
+     * @var DownloadableFile
+     */
+    protected $downloadableFile;
+
+    /**
+     * @var DownloadableLink
+     */
+    protected $downloadableLink;
+
+    /**
      * @param Filesystem $filesystem
      * @param MediaConfig $mediaConfig
+     * @param LinkRepositoryInterface $linkRepository
+     * @param DownloadableFile $downloadableFile
+     * @param DownloadableLink $downloadableLink
      */
-    public function __construct(Filesystem $filesystem, MediaConfig $mediaConfig)
-    {
+    public function __construct(
+        Filesystem $filesystem,
+        MediaConfig $mediaConfig,
+        LinkRepositoryInterface $linkRepository,
+        DownloadableFile $downloadableFile,
+        DownloadableLink $downloadableLink
+    ) {
         $this->filesystem = $filesystem;
         $this->mediaConfig = $mediaConfig;
+        $this->linkRepository = $linkRepository;
+        $this->downloadableFile = $downloadableFile;
+        $this->downloadableLink = $downloadableLink;
     }
 
     /**
@@ -46,59 +76,117 @@ class ImageReader
      */
     public function read(ProductInterface $product): array
     {
-        $file = $this->resolveProductImageFile($product);
-        if ($file === '') {
+        $imageFiles = $this->resolveProductImageFiles($product);
+        if (!$imageFiles) {
             throw new QueryException(__('Product %1 has no image to analyze.', $product->getSku()));
         }
 
-        $mediaPath = $this->mediaConfig->getMediaPath($file);
-
         try {
             $mediaDirectory = $this->filesystem->getDirectoryRead(DirectoryList::MEDIA);
-            if (!$mediaDirectory->isExist($mediaPath)) {
-                throw new QueryException(__('Product image %1 could not be found on the server.', $file));
+            foreach ($imageFiles as $imageFile) {
+                if (!$mediaDirectory->isExist($imageFile['path'])) {
+                    continue;
+                }
+
+                $data = $mediaDirectory->readFile($imageFile['path']);
+                if ($data === '' || $data === false) {
+                    continue;
+                }
+
+                return [
+                    'data' => $data,
+                    'mimeType' => $this->resolveMimeType($imageFile['file']),
+                    'file' => $imageFile['file'],
+                ];
             }
-            $data = $mediaDirectory->readFile($mediaPath);
         } catch (QueryException $e) {
             throw $e;
         } catch (\Exception $e) {
-            throw new QueryException(__('Failed to read product image %1: %2', $file, $e->getMessage()));
+            throw new QueryException(__('Failed to read product image for %1: %2', $product->getSku(), $e->getMessage()));
         }
 
-        if ($data === '' || $data === false) {
-            throw new QueryException(__('Product image %1 is empty or unreadable.', $file));
-        }
-
-        return [
-            'data' => $data,
-            'mimeType' => $this->resolveMimeType($file),
-            'file' => $file,
-        ];
+        throw new QueryException(__('Product %1 has no readable image to analyze.', $product->getSku()));
     }
 
     /**
-     * Resolve product image from image/small_image/thumbnail, then media gallery entries.
+     * Resolve candidate media paths from catalog images, then downloadable file links.
      *
      * @param ProductInterface $product
-     * @return string
+     * @return array<int, array{file: string, path: string}>
      */
-    private function resolveProductImageFile(ProductInterface $product): string
+    private function resolveProductImageFiles(ProductInterface $product): array
     {
+        $imageFiles = [];
+
         foreach (['image', 'small_image', 'thumbnail'] as $attributeCode) {
             $value = trim((string) $product->getData($attributeCode));
             if ($value !== '' && $value !== 'no_selection') {
-                return $value;
+                $this->addImageFile($imageFiles, $value, $this->mediaConfig->getMediaPath($value));
             }
         }
 
         foreach ((array) $product->getMediaGalleryEntries() as $entry) {
             $file = trim((string) $entry->getFile());
             if ($file !== '') {
-                return $file;
+                $this->addImageFile($imageFiles, $file, $this->mediaConfig->getMediaPath($file));
             }
         }
 
-        return '';
+        foreach ($this->resolveDownloadableImageFiles($product) as $file) {
+            $this->addImageFile($imageFiles, $file, $file);
+        }
+
+        return array_values($imageFiles);
+    }
+
+    /**
+     * Resolve downloadable product file links as fallback source images.
+     *
+     * @param ProductInterface $product
+     * @return string[]
+     */
+    private function resolveDownloadableImageFiles(ProductInterface $product): array
+    {
+        $files = [];
+
+        try {
+            $links = $this->linkRepository->getLinksByProduct($product);
+        } catch (\Exception $e) {
+            return $files;
+        }
+
+        foreach ((array) $links as $link) {
+            if ((string) $link->getLinkType() !== Download::LINK_TYPE_FILE) {
+                continue;
+            }
+
+            $linkFile = trim((string) $link->getLinkFile());
+            if ($linkFile === '') {
+                continue;
+            }
+
+            $files[] = $this->downloadableFile->getFilePath($this->downloadableLink->getBasePath(), $linkFile);
+        }
+
+        return $files;
+    }
+
+    /**
+     * Add a unique image file candidate.
+     *
+     * @param array<string, array{file: string, path: string}> $imageFiles
+     * @param string $file
+     * @param string $path
+     * @return void
+     */
+    private function addImageFile(array &$imageFiles, string $file, string $path): void
+    {
+        if (!isset($imageFiles[$path])) {
+            $imageFiles[$path] = [
+                'file' => $file,
+                'path' => $path,
+            ];
+        }
     }
 
     /**
