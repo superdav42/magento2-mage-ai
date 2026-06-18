@@ -71,16 +71,21 @@ class ImageAnalyzer
      * Analyze a product image and return generated configured product attributes.
      *
      * @param ProductInterface $product
+     * @param callable|null $debugLogger Receives request/response debug labels and raw content.
      * @return array<string, mixed>
      * @throws QueryException
      */
-    public function analyze(ProductInterface $product): array
+    public function analyze(ProductInterface $product, ?callable $debugLogger = null): array
     {
         $image = $this->imageReader->read($product);
         if ($this->helper->getProvider() === 'ollama') {
             $payload = $this->buildOllamaPayload($product, $image['data']);
+            $endpoint = $this->helper->getOllamaEndpointUrl('/api/chat');
+            $this->writeDebug($debugLogger, 'Ollama request', "POST " . $endpoint . "\nContent-Type: application/json\n\n" . $payload);
+
             $this->setOllamaHeaders();
-            $this->curl->post($this->helper->getOllamaEndpointUrl('/api/chat'), $payload);
+            $this->curl->post($endpoint, $payload);
+            $this->writeDebug($debugLogger, 'Ollama response', "HTTP " . $this->curl->getStatus() . "\n\n" . $this->curl->getBody());
 
             return $this->validateOllamaResponse();
         }
@@ -91,6 +96,23 @@ class ImageAnalyzer
         $this->curl->post($this->helper->getOpenAIEndpointUrl('/v1/chat/completions'), $payload);
 
         return $this->validateResponse();
+    }
+
+    /**
+     * Emit debug content for callers that opted into raw AI transport output.
+     *
+     * @param callable|null $debugLogger
+     * @param string $label
+     * @param string $content
+     * @return void
+     */
+    private function writeDebug(?callable $debugLogger, string $label, string $content): void
+    {
+        if ($debugLogger === null) {
+            return;
+        }
+
+        $debugLogger($label, $content);
     }
 
     /**
