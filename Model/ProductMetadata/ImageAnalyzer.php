@@ -214,6 +214,10 @@ class ImageAnalyzer
         $lines[] = '- Descriptions must identify what is visibly happening and should not use vague filler like beautiful image, powerful artwork, inspiring scene, or perfect for any use.';
         $lines[] = '- Do not invent people, locations, objects, scripture references, or doctrine that are not visible or strongly supported by the existing product context.';
         $lines[] = '- If the existing title names the Biblical event or subject, preserve that meaning and use it to improve missing SEO fields.';
+        $lines[] = '- Return every requested schema key. Use JSON strings for scalar fields and JSON arrays for keyword fields.';
+        $lines[] = '- Do not return blank name, description, meta_title, meta_description, or meta_keyword values when the image or current product context provides enough evidence for a safe value.';
+        $lines[] = '- Keep meta_title under 60 characters when possible and meta_description under 155 characters when possible.';
+        $lines[] = '- Do not repeat the same keyword across primary, secondary, and tertiary keyword fields.';
         $lines[] = '- Return empty arrays for keyword fields when no specific non-generic terms can be justified.';
 
         $lines[] = '';
@@ -253,6 +257,8 @@ class ImageAnalyzer
                     'type' => 'array',
                     'description' => $config['instruction'],
                     'items' => $items,
+                    'uniqueItems' => true,
+                    'maxItems' => $this->getMaxItemsForAttribute($code),
                 ];
                 continue;
             }
@@ -261,6 +267,10 @@ class ImageAnalyzer
                 'type' => 'string',
                 'description' => $config['instruction'],
             ];
+            $maxLength = $this->getMaxLengthForAttribute($code);
+            if ($maxLength) {
+                $properties[$code]['maxLength'] = $maxLength;
+            }
             if ($input === 'select' && !empty($enum) && count($enum) <= 200) {
                 $properties[$code]['enum'] = $enum;
             }
@@ -272,6 +282,46 @@ class ImageAnalyzer
             'properties' => $properties,
             'required' => $required,
         ];
+    }
+
+    /**
+     * Get a safe maximum number of generated list items for known keyword attributes.
+     *
+     * @param string $code
+     * @return int
+     */
+    private function getMaxItemsForAttribute(string $code): int
+    {
+        switch ($code) {
+            case 'keywords':
+                return 8;
+            case 'secondary_keywords':
+                return 12;
+            case 'tertiary_keywords':
+                return 15;
+            default:
+                return 20;
+        }
+    }
+
+    /**
+     * Get schema max length constraints for common SEO scalar attributes.
+     *
+     * @param string $code
+     * @return int|null
+     */
+    private function getMaxLengthForAttribute(string $code): ?int
+    {
+        switch ($code) {
+            case 'meta_title':
+                return 70;
+            case 'meta_description':
+                return 180;
+            case 'meta_keyword':
+                return 255;
+            default:
+                return null;
+        }
     }
 
     /**
