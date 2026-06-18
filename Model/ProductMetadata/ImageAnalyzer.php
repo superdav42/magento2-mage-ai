@@ -19,6 +19,7 @@ use Mageprince\MageAI\Model\Query\QueryException;
 class ImageAnalyzer
 {
     private const SYSTEM_PROMPT = 'You analyze Christian art product images for ecommerce catalog metadata. Return only valid JSON. Be specific to the visible Biblical subject, event, people, setting, symbols, and ministry use. Avoid generic filler, generic emotions, bare colors, counts, and media words unless central to the image. Do not use markdown, explanations, or code fences.';
+    private const REQUEST_TIMEOUT = 900;
 
     /**
      * @var Curl
@@ -140,6 +141,7 @@ class ImageAnalyzer
             throw new QueryException(__('OpenAI-compatible API key not found. Please check MageAI configuration.'));
         }
 
+        $this->curl->setTimeout(self::REQUEST_TIMEOUT);
         $this->curl->setHeaders([
             'Content-Type' => 'application/json',
             'Authorization' => 'Bearer ' . $token,
