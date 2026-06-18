@@ -11,6 +11,7 @@ define([
             generateBtnSelector: '.generate-mageai-btn',
             advancedGenerateBtnSelector: '.advanced-generate-mageai-btn',
             imageMetadataBtnSelector: '#mp-mageai-image-metadata-btn',
+            queueImageMetadataBtnSelector: '#mp-mageai-queue-image-metadata-btn',
             advancedGenerateModalSelector: '#advanced-generate-modal',
             promptGenerateTextAreaSelector: '#mp-custom-prompt',
             shortDescriptionFieldIdentifier: 'product_form_short_description_mageai'
@@ -294,6 +295,52 @@ define([
                     } else {
                         alert({
                             title: $.mage.__('Image Metadata Error'),
+                            content: response.data
+                        });
+                        deferred.resolve(false);
+                    }
+                },
+                error: function (XMLHttpRequest, textStatus, errorThrown) {
+                    console.log(errorThrown);
+                    deferred.reject(errorThrown);
+                }
+            });
+
+            return deferred.promise();
+        },
+
+        /**
+         * Enqueues the current product for asynchronous image metadata generation.
+         *
+         * @returns {jQuery.Deferred}
+         */
+        queueImageMetadata: function () {
+            var deferred = $.Deferred();
+            var productId = this.getCurrentProductId();
+
+            if (!productId) {
+                alert({
+                    title: $.mage.__('Save Product First'),
+                    content: $.mage.__('Please save the product before queueing image metadata generation.')
+                });
+                deferred.resolve(false);
+                return deferred.promise();
+            }
+
+            $.ajax({
+                url: window.mageAIQueueImageMetadataUrl,
+                type: 'POST',
+                showLoader: true,
+                data: {
+                    'form_key': FORM_KEY,
+                    'product_id': productId
+                },
+                success: function (response) {
+                    if (response.error == false) {
+                        deferred.resolve(response.data || {});
+                    } else {
+                        alert({
+                            title: $.mage.__('Image Metadata Queue Error'),
                             content: response.data
                         });
                         deferred.resolve(false);
