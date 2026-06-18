@@ -120,7 +120,7 @@ class GenerateImageMetadataCommand extends Command
     protected function configure(): void
     {
         $this->setName('mageai:generate:image-metadata');
-        $this->setDescription('Generate configured product attributes from product images using an OpenAI-compatible endpoint.');
+        $this->setDescription('Generate configured product attributes from product images using an OpenAI-compatible endpoint. Use -vvv to print native Ollama request and response bodies.');
         $this->addOption(self::OPTION_PRODUCT_ID, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product ID(s) to process.');
         $this->addOption(self::OPTION_SKU, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product SKU(s) to process.');
         $this->addOption(self::OPTION_LIMIT, null, InputOption::VALUE_OPTIONAL, 'Maximum products to process when no product-id/sku filter is supplied. Use 0 for all matched products.', 50);
@@ -154,6 +154,7 @@ class GenerateImageMetadataCommand extends Command
 
         $force = (bool) $input->getOption(self::OPTION_FORCE);
         $dryRun = (bool) $input->getOption(self::OPTION_DRY_RUN);
+        $debugLogger = $this->getImageAnalyzerDebugLogger($output);
 
         if ((bool) $input->getOption(self::OPTION_FROM_QUEUE)) {
             return $this->executeFromQueue($input, $output, $force, $dryRun);
@@ -187,7 +188,7 @@ class GenerateImageMetadataCommand extends Command
                     continue;
                 }
 
-                $metadata = $this->imageAnalyzer->analyze($product);
+                $metadata = $this->imageAnalyzer->analyze($product, $debugLogger);
                 $changes = $this->metadataApplier->apply($product, $metadata, $force, $dryRun);
 
                 if (empty($changes)) {
@@ -291,6 +292,25 @@ class GenerateImageMetadataCommand extends Command
     }
 
     /**
+     * Return a raw transport logger for image-analysis requests in debug verbosity.
+     *
+     * @param OutputInterface $output
+     * @return callable|null
+     */
+    private function getImageAnalyzerDebugLogger(OutputInterface $output): ?callable
+    {
+        if ($output->getVerbosity() < OutputInterface::VERBOSITY_DEBUG) {
+            return null;
+        }
+
+        return function (string $label, string $content) use ($output): void {
+            $output->writeln(sprintf('<comment>--- MageAI %s ---</comment>', $label));
+            $output->writeln($content, OutputInterface::OUTPUT_RAW);
+            $output->writeln('');
+        };
+    }
+
+    /**
      * Analyze and apply one queue row.
      *
      * @param array<string, mixed> $row
@@ -310,7 +330,7 @@ class GenerateImageMetadataCommand extends Command
         try {
             $product = $this->productRepository->getById($productId, false, 0, true);
             $product->setStoreId(0);
-            $metadata = $this->imageAnalyzer->analyze($product);
+            $metadata = $this->imageAnalyzer->analyze($product, $this->getImageAnalyzerDebugLogger($output));
             $changes = $this->metadataApplier->apply($product, $metadata, $force, $dryRun);
             $duration = number_format(microtime(true) - $startedAt, 2);
 
