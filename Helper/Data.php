@@ -44,6 +44,8 @@ class Data extends AbstractHelper
     public const XML_PATH_GEMINI_BASE_URL = 'mageai/api/gemini_base_url';
     public const XML_PATH_GEMINI_API_KEY = 'mageai/api/gemini_api_secret';
     public const XML_PATH_GEMINI_MODEL = 'mageai/api/gemini_model';
+    public const XML_PATH_OLLAMA_BASE_URL = 'mageai/api/ollama_base_url';
+    public const XML_PATH_OLLAMA_MODEL = 'mageai/api/ollama_model';
     public const XML_PATH_PRODUCT_ATTRIBUTE = 'mageai/product_description/attribute';
     public const XML_PATH_TEMPERATURE = 'mageai/product_description/temperature';
     public const XML_PATH_DESCRIPTION_PROMPT = 'mageai/product_description/description_prompt';
@@ -98,7 +100,7 @@ class Data extends AbstractHelper
     /**
      * Get selected AI provider
      *
-     * @return string  'openai' or 'anthropic'
+     * @return string  'openai', 'anthropic', 'gemini', or 'ollama'
      */
     public function getProvider()
     {
@@ -221,6 +223,41 @@ class Data extends AbstractHelper
     public function getGeminiModel()
     {
         return $this->getConfig(self::XML_PATH_GEMINI_MODEL);
+    }
+
+    /**
+     * Get Ollama native API base URL.
+     *
+     * @return string
+     */
+    public function getOllamaBaseUrl(): string
+    {
+        return rtrim((string) ($this->getConfig(self::XML_PATH_OLLAMA_BASE_URL) ?: 'http://localhost:11434'), '/');
+    }
+
+    /**
+     * Build an Ollama native API endpoint URL.
+     *
+     * Accepts base URLs with or without a trailing /v1 so a previously configured
+     * OpenAI-compatible Ollama endpoint can be reused safely.
+     *
+     * @param string $path Endpoint path, for example /api/chat
+     * @return string
+     */
+    public function getOllamaEndpointUrl(string $path): string
+    {
+        $baseUrl = preg_replace('#/v1$#', '', $this->getOllamaBaseUrl());
+        return rtrim((string) $baseUrl, '/') . '/' . ltrim($path, '/');
+    }
+
+    /**
+     * Get Ollama model ID.
+     *
+     * @return string
+     */
+    public function getOllamaModel(): string
+    {
+        return (string) ($this->getConfig(self::XML_PATH_OLLAMA_MODEL) ?: 'gemma4:12b-it-qat');
     }
 
     /**

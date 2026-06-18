@@ -39,6 +39,8 @@
                 <gemini_base_url>https://generativelanguage.googleapis.com</gemini_base_url>
                 <gemini_api_secret backend_model="Magento\Config\Model\Config\Backend\Encrypted"/>
                 <gemini_model>gemini-2.5-flash</gemini_model>
+                <ollama_base_url>http://localhost:11434</ollama_base_url>
+                <ollama_model>gemma4:12b-it-qat</ollama_model>
             </api>
             <product_description>
                 <temperature>0.5</temperature>

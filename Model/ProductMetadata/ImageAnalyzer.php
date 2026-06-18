@@ -77,6 +77,14 @@ class ImageAnalyzer
     public function analyze(ProductInterface $product): array
     {
         $image = $this->imageReader->read($product);
+        if ($this->helper->getProvider() === 'ollama') {
+            $payload = $this->buildOllamaPayload($product, $image['data']);
+            $this->setOllamaHeaders();
+            $this->curl->post($this->helper->getOllamaEndpointUrl('/api/chat'), $payload);
+
+            return $this->validateOllamaResponse();
+        }
+
         $payload = $this->buildPayload($product, $image['data'], $image['mimeType']);
 
         $this->setHeaders();
@@ -129,6 +137,37 @@ class ImageAnalyzer
     }
 
     /**
+     * Build Ollama native /api/chat payload with schema-constrained output.
+     *
+     * @param ProductInterface $product
+     * @param string $imageData
+     * @return string
+     */
+    private function buildOllamaPayload(ProductInterface $product, string $imageData): string
+    {
+        $targetAttributes = $this->helper->getProductImageAnalysisAttributeConfig();
+        $prompt = $this->buildPrompt($product, $targetAttributes);
+
+        return $this->json->serialize([
+            'model' => $this->helper->getOllamaModel(),
+            'messages' => [
+                ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
+                [
+                    'role' => 'user',
+                    'content' => $prompt,
+                    'images' => [base64_encode($imageData)],
+                ],
+            ],
+            'format' => $this->buildResponseSchema($targetAttributes),
+            'options' => [
+                'temperature' => $this->helper->getProductImageAnalysisTemperature(),
+                'num_predict' => $this->helper->getProductImageAnalysisMaxTokens(),
+            ],
+            'stream' => false,
+        ]);
+    }
+
+    /**
      * Set OpenAI-compatible request headers.
      *
      * @return void
@@ -145,6 +184,19 @@ class ImageAnalyzer
         $this->curl->setHeaders([
             'Content-Type' => 'application/json',
             'Authorization' => 'Bearer ' . $token,
+        ]);
+    }
+
+    /**
+     * Set Ollama native request headers.
+     *
+     * @return void
+     */
+    private function setOllamaHeaders(): void
+    {
+        $this->curl->setTimeout(self::REQUEST_TIMEOUT);
+        $this->curl->setHeaders([
+            'Content-Type' => 'application/json',
         ]);
     }
 
@@ -172,6 +224,33 @@ class ImageAnalyzer
         $content = $response['choices'][0]['message']['content'] ?? $response['choices'][0]['text'] ?? '';
         if (!is_string($content) || trim($content) === '') {
             throw new QueryException(__('No image metadata content was returned by the OpenAI-compatible endpoint.'));
+        }
+
+        $data = $this->parseJsonObject($content);
+        return isset($data['attributes']) && is_array($data['attributes']) ? $data['attributes'] : $data;
+    }
+
+    /**
+     * Parse and validate an Ollama native /api/chat response.
+     *
+     * @return array<string, mixed>
+     * @throws QueryException
+     */
+    private function validateOllamaResponse(): array
+    {
+        $status = $this->curl->getStatus();
+        if ($status >= 400) {
+            throw new QueryException(__('Ollama endpoint returned HTTP %1: %2', $status, $this->curl->getBody()));
+        }
+
+        $response = $this->json->unserialize($this->curl->getBody());
+        if (isset($response['error'])) {
+            throw new QueryException(__($response['error']));
+        }
+
+        $content = $response['message']['content'] ?? '';
+        if (!is_string($content) || trim($content) === '') {
+            throw new QueryException(__('No image metadata content was returned by the Ollama native endpoint.'));
         }
 
         $data = $this->parseJsonObject($content);
