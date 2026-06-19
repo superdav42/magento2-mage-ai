@@ -14,6 +14,13 @@ use Magento\Framework\DataObject;
 
 class ImageAnalysisAttributes extends AbstractFieldArray
 {
+    private const INSTRUCTION_COLUMN = 'instruction';
+
+    /**
+     * @var string
+     */
+    protected $_template = 'Mageprince_MageAI::system/config/form/field/image-analysis-attributes.phtml';
+
     /**
      * @var AttributeColumn|null
      */
@@ -40,10 +47,10 @@ class ImageAnalysisAttributes extends AbstractFieldArray
             'label' => __('Attribute'),
             'renderer' => $this->getAttributeRenderer(),
         ]);
-        $this->addColumn('instruction', [
+        $this->addColumn(self::INSTRUCTION_COLUMN, [
             'label' => __('Prompt Description'),
-            'class' => 'required-entry',
-            'style' => 'width:420px',
+            'class' => 'required-entry admin__control-textarea mp-mageai-image-analysis-prompt',
+            'style' => 'width:100%; min-height:90px;',
         ]);
         $this->addColumn('policy', [
             'label' => __('Update Policy'),
@@ -55,6 +62,68 @@ class ImageAnalysisAttributes extends AbstractFieldArray
         ]);
         $this->_addAfter = false;
         $this->_addButtonLabel = __('Add Attribute');
+    }
+
+    /**
+     * Render array cell for prototypeJS template.
+     *
+     * @param string $columnName
+     * @return string
+     * @throws \Exception
+     */
+    public function renderCellTemplate($columnName)
+    {
+        if ($columnName !== self::INSTRUCTION_COLUMN) {
+            return parent::renderCellTemplate($columnName);
+        }
+
+        $columns = $this->getColumns();
+        if (empty($columns[$columnName])) {
+            throw new \Exception('Wrong column name specified.');
+        }
+
+        $column = $columns[$columnName];
+
+        return '<textarea id="' . $this->_getCellInputElementId('<%- _id %>', $columnName) . '"'
+            . ' name="' . $this->_getCellInputElementName($columnName) . '"'
+            . ' class="' . (isset($column['class']) ? $column['class'] : 'admin__control-textarea') . '"'
+            . (isset($column['style']) ? ' style="' . $column['style'] . '"' : '')
+            . '><%- ' . $columnName . ' %></textarea>';
+    }
+
+    /**
+     * Get columns rendered on the compact first row.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public function getMainColumns(): array
+    {
+        $columns = $this->getColumns();
+        unset($columns[self::INSTRUCTION_COLUMN]);
+
+        return $columns;
+    }
+
+    /**
+     * Get the prompt/instruction column name.
+     *
+     * @return string
+     */
+    public function getInstructionColumnName(): string
+    {
+        return self::INSTRUCTION_COLUMN;
+    }
+
+    /**
+     * Get prompt/instruction row label.
+     *
+     * @return \Magento\Framework\Phrase|string
+     */
+    public function getInstructionLabel()
+    {
+        $columns = $this->getColumns();
+
+        return $columns[self::INSTRUCTION_COLUMN]['label'] ?? __('Prompt Description');
     }
 
     /**

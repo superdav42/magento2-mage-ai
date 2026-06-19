@@ -225,7 +225,7 @@
                 <label>Product Image Analysis</label>
                 <field id="prompt" translate="label" type="textarea" sortOrder="10" showInDefault="1" showInStore="1" showInWebsite="1" canRestore="1">
                     <label>Image Metadata Prompt</label>
-                    <comment><![CDATA[Used by <code>bin/magento mageai:generate:image-metadata</code> and the admin product edit image-analysis button. The product's image is sent to the configured OpenAI-compatible chat completions endpoint. Attribute-specific JSON output instructions are built from the rows below.]]></comment>
+                    <comment><![CDATA[Used by <code>bin/magento mageai:generate:image-metadata</code> and the admin product edit image-analysis button. The product's image is sent to the configured AI provider. Attribute-specific JSON output instructions are built from the rows below.]]></comment>
                 </field>
                 <field id="max_tokens" translate="label" type="text" sortOrder="20" showInDefault="1" canRestore="1">
                     <label>Image Analysis Max Tokens</label>
@@ -236,7 +236,17 @@
                     <comment>Sampling temperature for image analysis only. Use 0 for deterministic catalog metadata.</comment>
                     <validate>required-entry validate-number</validate>
                 </field>
-                <field id="attributes" translate="label" sortOrder="40" showInDefault="1" canRestore="1">
+                <field id="ollama_num_ctx" translate="label" type="text" sortOrder="40" showInDefault="1" canRestore="1">
+                    <label>Ollama Context Window</label>
+                    <comment>Native Ollama image-analysis context window tokens (num_ctx). Increase for large prompts or JSON schemas; lower to fit available VRAM. Applies only when AI Provider is Ollama.</comment>
+                    <validate>required-entry validate-digits validate-greater-than-zero</validate>
+                </field>
+                <field id="ollama_think" translate="label" type="select" sortOrder="50" showInDefault="1" canRestore="1">
+                    <label>Enable Ollama Thinking Mode</label>
+                    <comment>Send native Ollama think=true for image metadata. Leave disabled for catalog metadata unless the selected model requires reasoning, because thinking models can spend output tokens before emitting JSON.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="attributes" translate="label" sortOrder="60" showInDefault="1" canRestore="1">
                     <label>Update These Attributes Based on Product Image Analysis</label>
                     <frontend_model>Mageprince\MageAI\Block\Adminhtml\System\Config\Form\Field\ImageAnalysisAttributes</frontend_model>
                     <backend_model>Magento\Config\Model\Config\Backend\Serialized\ArraySerialized</backend_model>

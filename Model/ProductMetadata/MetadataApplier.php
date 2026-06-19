@@ -82,6 +82,11 @@ class MetadataApplier
     ];
 
     /**
+     * @var string
+     */
+    private const SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE = 'keywords';
+
+    /**
      * @var array<string, int>
      */
     private const MAX_GENERATED_KEYWORD_LABELS = [
@@ -406,14 +411,19 @@ class MetadataApplier
         try {
             $optionId = $this->attributeOptionManagement->add(
                 Product::ENTITY,
-                $this->getAttribute($attributeCode)->getAttributeId(),
+                $this->getAttribute($this->getOptionAttributeCode($attributeCode))->getAttributeId(),
                 $option
             );
         } catch (InputException $e) {
             $optionId = $this->getOptionId($attributeCode, $label, true);
         }
 
-        return $optionId ?: $this->getOptionId($attributeCode, $label, true);
+        if ($optionId) {
+            $this->getOptionId($attributeCode, $label, true);
+            return $optionId;
+        }
+
+        return $this->getOptionId($attributeCode, $label, true);
     }
 
     /**
@@ -426,7 +436,7 @@ class MetadataApplier
      */
     private function getOptionId(string $attributeCode, string $label, bool $force = false)
     {
-        $attribute = $this->getAttribute($attributeCode);
+        $attribute = $this->getAttribute($this->getOptionAttributeCode($attributeCode));
         $attributeId = $attribute->getAttributeId();
 
         if ($force || !isset($this->attributeValues[$attributeId])) {
@@ -447,6 +457,23 @@ class MetadataApplier
         }
 
         return $this->attributeValues[$attributeId][strtolower($label)] ?? false;
+    }
+
+    /**
+     * Resolve the attribute whose option table should be used for a configured field.
+     *
+     * GoodSalt keyword attributes share the primary keywords option set through a
+     * custom source model, so secondary and tertiary keyword values must store
+     * option IDs from keywords instead of creating isolated options on each field.
+     *
+     * @param string $attributeCode
+     * @return string
+     */
+    private function getOptionAttributeCode(string $attributeCode): string
+    {
+        return isset(self::KEYWORD_ATTRIBUTE_CODES[$attributeCode])
+            ? self::SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE
+            : $attributeCode;
     }
 
     /**
@@ -582,7 +609,14 @@ class MetadataApplier
             }
         }
 
-        return array_values(array_unique($ids));
+        $ids = array_values(array_unique($ids));
+        if (!isset(self::KEYWORD_ATTRIBUTE_CODES[$attributeCode])) {
+            return $ids;
+        }
+
+        return array_values(array_filter($ids, function ($id) use ($attributeCode) {
+            return !empty($this->getOptionLabelsByIds($attributeCode, [$id]));
+        }));
     }
 
     /**
@@ -606,7 +640,7 @@ class MetadataApplier
      */
     private function getOptionLabelsByIds(string $attributeCode, array $ids): array
     {
-        $attribute = $this->getAttribute($attributeCode);
+        $attribute = $this->getAttribute($this->getOptionAttributeCode($attributeCode));
         $attributeId = $attribute->getAttributeId();
         $this->getOptionId($attributeCode, '__mageai_cache_warm__');
 
