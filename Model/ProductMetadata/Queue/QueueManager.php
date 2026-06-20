@@ -296,6 +296,25 @@ class QueueManager
     }
 
     /**
+     * Return pending queue rows for read-only status inspection.
+     *
+     * @param int $limit Use 0 to return all pending rows.
+     * @return array<int, array<string, mixed>>
+     */
+    public function getPendingRows(int $limit = 100): array
+    {
+        $select = $this->getConnection()->select()
+            ->from($this->getTableName())
+            ->where('status = ?', self::STATUS_PENDING)
+            ->order(['missing_score DESC', 'queue_id ASC']);
+        if ($limit > 0) {
+            $select->limit($limit);
+        }
+
+        return $this->getConnection()->fetchAll($select);
+    }
+
+    /**
      * Remove existing queue rows, optionally limited to selected products.
      *
      * @param int[] $productIds

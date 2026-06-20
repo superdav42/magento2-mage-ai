@@ -29,6 +29,7 @@ class QueueImageMetadataCommand extends Command
     private const OPTION_REBUILD = 'rebuild';
     private const OPTION_APPEND = 'append';
     private const OPTION_STATUS = 'status';
+    private const OPTION_LIST_PENDING = 'list-pending';
     private const OPTION_RETRY_FAILED = 'retry-failed';
     private const OPTION_RELEASE_STALE = 'release-stale';
     private const OPTION_MAX_ATTEMPTS = 'max-attempts';
@@ -108,6 +109,7 @@ class QueueImageMetadataCommand extends Command
         $this->addOption(self::OPTION_REBUILD, null, InputOption::VALUE_NONE, 'Clear and rebuild queue rows for matched products.');
         $this->addOption(self::OPTION_APPEND, null, InputOption::VALUE_NONE, 'Append/upsert missing or changed matched products without clearing existing queue rows.');
         $this->addOption(self::OPTION_STATUS, null, InputOption::VALUE_NONE, 'Print queue counts by status and the pending score range.');
+        $this->addOption(self::OPTION_LIST_PENDING, null, InputOption::VALUE_NONE, 'Include pending queue rows in status output; uses --limit rows, with 0 listing all pending rows.');
         $this->addOption(self::OPTION_RETRY_FAILED, null, InputOption::VALUE_NONE, 'Move failed rows back to pending.');
         $this->addOption(self::OPTION_RELEASE_STALE, null, InputOption::VALUE_OPTIONAL, 'Release processing locks older than MINUTES back to pending.', false);
         $this->addOption(self::OPTION_MAX_ATTEMPTS, null, InputOption::VALUE_OPTIONAL, 'Only retry failed rows with attempts less than or equal to this value.');
@@ -164,8 +166,11 @@ class QueueImageMetadataCommand extends Command
             $buildSummary = $this->buildQueueOrReport($input);
         }
 
-        if ((bool) $input->getOption(self::OPTION_STATUS) || (!$shouldBuild && empty($changed))) {
-            $this->writeStatus($output, $format, $changed, $buildSummary);
+        $pendingListLimit = (bool) $input->getOption(self::OPTION_LIST_PENDING)
+            ? max(0, (int) $input->getOption(self::OPTION_LIMIT))
+            : null;
+        if ((bool) $input->getOption(self::OPTION_STATUS) || $pendingListLimit !== null || (!$shouldBuild && empty($changed))) {
+            $this->writeStatus($output, $format, $changed, $buildSummary, $pendingListLimit);
             return Command::SUCCESS;
         }
 
@@ -375,19 +380,33 @@ class QueueImageMetadataCommand extends Command
      * @param string $format
      * @param array<string, int> $changed
      * @param array<string, mixed>|null $buildSummary
+     * @param int|null $pendingListLimit
      * @return void
      */
-    private function writeStatus(OutputInterface $output, string $format, array $changed = [], ?array $buildSummary = null): void
+    private function writeStatus(
+        OutputInterface $output,
+        string $format,
+        array $changed = [],
+        ?array $buildSummary = null,
+        ?int $pendingListLimit = null
+    ): void
     {
         $counts = $this->queueManager->getStatusCounts();
         $scoreRange = $this->queueManager->getPendingScoreRange();
+        $pendingRows = $pendingListLimit === null ? [] : $this->queueManager->getPendingRows($pendingListLimit);
         if ($format === 'json') {
-            $output->writeln(json_encode([
+            $statusData = [
                 'counts' => $counts,
                 'pending_score_range' => $scoreRange,
                 'changed' => $changed,
                 'build' => $buildSummary,
-            ], JSON_PRETTY_PRINT));
+            ];
+            if ($pendingListLimit !== null) {
+                $statusData['pending_rows'] = array_map(function (array $row): array {
+                    return $this->formatPendingRowForJson($row);
+                }, $pendingRows);
+            }
+            $output->writeln(json_encode($statusData, JSON_PRETTY_PRINT));
             return;
         }
 
@@ -400,12 +419,89 @@ class QueueImageMetadataCommand extends Command
 
         $range = $scoreRange['max'] === null ? 'none' : sprintf('%d-%d', $scoreRange['min'], $scoreRange['max']);
         $output->writeln(sprintf('<info>Pending score range: %s</info>', $range));
+        if ($pendingListLimit !== null) {
+            $this->writePendingRows($output, $pendingRows, $pendingListLimit);
+        }
         foreach ($changed as $label => $count) {
             $output->writeln(sprintf('<info>%s: %d row(s).</info>', str_replace('_', ' ', ucfirst($label)), $count));
         }
         if ($buildSummary !== null) {
             $this->writeBuildSummary($output, $buildSummary);
         }
+    }
+
+    /**
+     * @param OutputInterface $output
+     * @param array<int, array<string, mixed>> $rows
+     * @param int $limit
+     * @return void
+     */
+    private function writePendingRows(OutputInterface $output, array $rows, int $limit): void
+    {
+        $limitLabel = $limit === 0 ? 'all' : (string) $limit;
+        if (empty($rows)) {
+            $output->writeln(sprintf('<info>Pending products (limit: %s): none</info>', $limitLabel));
+            return;
+        }
+
+        $output->writeln(sprintf('<info>Pending products (limit: %s):</info>', $limitLabel));
+        $table = new Table($output);
+        $table->setHeaders(['Queue ID', 'Product ID', 'SKU', 'Type', 'Score', 'Missing Fields', 'Attempts', 'Created At', 'Updated At']);
+        foreach ($rows as $row) {
+            $missingFields = $this->decodeJsonList($row['missing_fields'] ?? null);
+            $table->addRow([
+                (int) ($row['queue_id'] ?? 0),
+                (int) ($row['product_id'] ?? 0),
+                (string) ($row['sku'] ?? ''),
+                (string) ($row['product_type'] ?? ''),
+                (int) ($row['missing_score'] ?? 0),
+                empty($missingFields) ? '-' : implode(', ', $missingFields),
+                (int) ($row['attempts'] ?? 0),
+                (string) ($row['created_at'] ?? ''),
+                (string) ($row['updated_at'] ?? ''),
+            ]);
+        }
+        $table->render();
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function formatPendingRowForJson(array $row): array
+    {
+        $row['queue_id'] = (int) ($row['queue_id'] ?? 0);
+        $row['product_id'] = (int) ($row['product_id'] ?? 0);
+        $row['missing_score'] = (int) ($row['missing_score'] ?? 0);
+        $row['attempts'] = (int) ($row['attempts'] ?? 0);
+        $row['missing_fields'] = $this->decodeJsonList($row['missing_fields'] ?? null);
+
+        return $row;
+    }
+
+    /**
+     * @param mixed $value
+     * @return string[]
+     */
+    private function decodeJsonList($value): array
+    {
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+        if (!is_array($decoded)) {
+            return [$value];
+        }
+
+        $items = [];
+        foreach ($decoded as $item) {
+            if (is_scalar($item)) {
+                $items[] = (string) $item;
+            }
+        }
+
+        return $items;
     }
 
     /**
