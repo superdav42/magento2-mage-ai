@@ -111,7 +111,7 @@ class QueueImageMetadataCommand extends Command
     {
         $this->setName('mageai:queue:image-metadata');
         $this->setDescription('Audit, build, inspect, and maintain the MageAI image metadata queue without AI calls.');
-        $this->addOption(self::OPTION_REBUILD, null, InputOption::VALUE_NONE, 'Clear and rebuild queue rows for matched products.');
+        $this->addOption(self::OPTION_REBUILD, null, InputOption::VALUE_NONE, 'Clear all non-processing queue rows, then rebuild rows for matched products.');
         $this->addOption(self::OPTION_APPEND, null, InputOption::VALUE_NONE, 'Append/upsert missing or changed matched products without clearing existing queue rows.');
         $this->addOption(self::OPTION_STATUS, null, InputOption::VALUE_NONE, 'Print queue counts by status and the pending score range.');
         $this->addOption(self::OPTION_LIST_PENDING, null, InputOption::VALUE_NONE, 'Include pending queue rows in status output; uses --limit rows, with 0 listing all pending rows.');
@@ -233,6 +233,8 @@ class QueueImageMetadataCommand extends Command
 
         $clearedRows = 0;
         if ($rebuild) {
+            // Rebuild intentionally replaces the queue contents for this command.
+            // QueueManager::clear() preserves processing rows so active leases are not stolen.
             $clearedRows = $this->queueManager->clear();
         }
 
@@ -281,10 +283,6 @@ class QueueImageMetadataCommand extends Command
                 }
 
                 $status = $statuses[$productId] ?? '';
-                if ($reportHandle === null && ($rebuild || $append) && $status === QueueManager::STATUS_PROCESSING) {
-                    continue;
-                }
-
                 $candidates[] = [
                     'product_id' => $productId,
                     'sku' => (string) $product->getSku(),
@@ -298,7 +296,8 @@ class QueueImageMetadataCommand extends Command
             $collection->clear();
         }
 
-        $selectedCandidates = $this->limitCandidatesByPriority($candidates, $limit);
+        $selectedCandidatePool = ($rebuild || $append) ? $this->filterQueueableCandidates($candidates) : $candidates;
+        $selectedCandidates = $this->limitCandidatesByPriority($selectedCandidatePool, $limit);
         $summary['included'] = count($selectedCandidates);
         if ($reportHandle !== null) {
             $this->writeCandidateReportRows($reportHandle, $selectedCandidates);
@@ -365,6 +364,19 @@ class QueueImageMetadataCommand extends Command
                 self::CSV_ESCAPE
             );
         }
+    }
+
+    /**
+     * Keep only candidates that can be enqueued without stealing active processing leases.
+     *
+     * @param array<int, array<string, mixed>> $candidates
+     * @return array<int, array<string, mixed>>
+     */
+    private function filterQueueableCandidates(array $candidates): array
+    {
+        return array_values(array_filter($candidates, function (array $candidate): bool {
+            return ($candidate['status'] ?? '') !== QueueManager::STATUS_PROCESSING;
+        }));
     }
 
     /**

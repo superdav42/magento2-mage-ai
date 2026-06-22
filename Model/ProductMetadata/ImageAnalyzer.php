@@ -366,7 +366,8 @@ class ImageAnalyzer
         $lines[] = '- Do not repeat the same keyword across primary, secondary, and tertiary keyword fields.';
         $lines[] = '- Return empty arrays for keyword fields when no specific non-generic terms can be justified.';
 
-        $previousProductName = trim($previousProductName);
+        $normalizedPreviousProductName = preg_replace('/[\p{C}\s]+/u', ' ', $previousProductName);
+        $previousProductName = is_string($normalizedPreviousProductName) ? trim($normalizedPreviousProductName) : '';
         if ($previousProductName !== '') {
             $lines[] = '';
             $lines[] = 'Adjacent product ID context:';
