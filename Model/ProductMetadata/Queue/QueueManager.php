@@ -143,7 +143,7 @@ class QueueManager
             $select = $connection->select()
                 ->from($this->getTableName(), ['queue_id'])
                 ->where('status = ?', self::STATUS_PENDING)
-                ->order(['missing_score DESC', 'queue_id ASC'])
+                ->order(['missing_score DESC', 'product_id ASC', 'queue_id ASC'])
                 ->limit($limit)
                 ->forUpdate(true);
             if ($maxAttempts > 0) {
@@ -190,7 +190,7 @@ class QueueManager
         $select = $this->getConnection()->select()
             ->from($this->getTableName())
             ->where('status = ?', self::STATUS_PENDING)
-            ->order(['missing_score DESC', 'queue_id ASC'])
+            ->order(['missing_score DESC', 'product_id ASC', 'queue_id ASC'])
             ->limit($limit);
         if ($maxAttempts > 0) {
             $select->where('attempts < ?', $maxAttempts);
@@ -306,7 +306,7 @@ class QueueManager
         $select = $this->getConnection()->select()
             ->from($this->getTableName())
             ->where('status = ?', self::STATUS_PENDING)
-            ->order(['missing_score DESC', 'queue_id ASC']);
+            ->order(['missing_score DESC', 'product_id ASC', 'queue_id ASC']);
         if ($limit > 0) {
             $select->limit($limit);
         }
@@ -465,7 +465,7 @@ class QueueManager
         $select = $this->getConnection()->select()
             ->from($this->getTableName())
             ->where('queue_id IN (?)', $ids)
-            ->order(['missing_score DESC', 'queue_id ASC']);
+            ->order(['missing_score DESC', 'product_id ASC', 'queue_id ASC']);
 
         return $this->getConnection()->fetchAll($select);
     }

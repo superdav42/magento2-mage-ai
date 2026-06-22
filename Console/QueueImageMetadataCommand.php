@@ -35,11 +35,16 @@ class QueueImageMetadataCommand extends Command
     private const OPTION_MAX_ATTEMPTS = 'max-attempts';
     private const OPTION_PRODUCT_ID = 'product-id';
     private const OPTION_SKU = 'sku';
+    private const OPTION_SKU_PREFIX = 'sku-prefix';
     private const OPTION_TYPE = 'type';
     private const OPTION_LIMIT = 'limit';
     private const OPTION_REPORT = 'report';
     private const OPTION_FORMAT = 'format';
+    private const OPTION_MIN_SCORE = 'min-score';
     private const OPTION_INCLUDE_ZERO_SCORE = 'include-zero-score';
+    private const CSV_DELIMITER = ',';
+    private const CSV_ENCLOSURE = '"';
+    private const CSV_ESCAPE = '\\';
     private const DEFAULT_PAGE_SIZE = 250;
 
     /**
@@ -115,10 +120,12 @@ class QueueImageMetadataCommand extends Command
         $this->addOption(self::OPTION_MAX_ATTEMPTS, null, InputOption::VALUE_OPTIONAL, 'Only retry failed rows with attempts less than or equal to this value.');
         $this->addOption(self::OPTION_PRODUCT_ID, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product ID(s) to audit or enqueue.');
         $this->addOption(self::OPTION_SKU, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product SKU(s) to audit or enqueue.');
+        $this->addOption(self::OPTION_SKU_PREFIX, null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'Product SKU prefix(es) to audit or enqueue, for example ksjas.');
         $this->addOption(self::OPTION_TYPE, null, InputOption::VALUE_OPTIONAL, 'Product type filter; use empty string for all product types.', 'image');
-        $this->addOption(self::OPTION_LIMIT, null, InputOption::VALUE_OPTIONAL, 'Maximum products to scan; use 0 for all matched products.', 100);
+        $this->addOption(self::OPTION_LIMIT, null, InputOption::VALUE_OPTIONAL, 'Maximum products to include after filters; use 0 for all matched products.', 100);
         $this->addOption(self::OPTION_REPORT, null, InputOption::VALUE_OPTIONAL, 'Write CSV audit report path, relative to Magento root unless absolute.');
         $this->addOption(self::OPTION_FORMAT, null, InputOption::VALUE_OPTIONAL, 'Status output format: table or json.', 'table');
+        $this->addOption(self::OPTION_MIN_SCORE, null, InputOption::VALUE_OPTIONAL, 'Only include products with this missing-data score or higher. Defaults to 1 unless --include-zero-score is set.');
         $this->addOption(self::OPTION_INCLUDE_ZERO_SCORE, null, InputOption::VALUE_NONE, 'Include zero-score products in queue/report output.');
     }
 
@@ -141,6 +148,10 @@ class QueueImageMetadataCommand extends Command
         $format = strtolower((string) $input->getOption(self::OPTION_FORMAT));
         if (!in_array($format, ['table', 'json'], true)) {
             $output->writeln('<error>Invalid --format. Use table or json.</error>');
+            return Command::FAILURE;
+        }
+        if (!$this->isValidNonNegativeIntegerOption($input->getOption(self::OPTION_MIN_SCORE))) {
+            $output->writeln('<error>Invalid --min-score. Use a non-negative integer.</error>');
             return Command::FAILURE;
         }
 
@@ -196,9 +207,11 @@ class QueueImageMetadataCommand extends Command
         $append = (bool) $input->getOption(self::OPTION_APPEND);
         $reportPath = (string) $input->getOption(self::OPTION_REPORT);
         $includeZeroScore = (bool) $input->getOption(self::OPTION_INCLUDE_ZERO_SCORE);
+        $minScore = $this->getMinimumScore($input, $includeZeroScore);
         $limit = max(0, (int) $input->getOption(self::OPTION_LIMIT));
         $productIds = $this->normalizeIntArrayOption($input->getOption(self::OPTION_PRODUCT_ID));
         $skus = $this->normalizeArrayOption($input->getOption(self::OPTION_SKU));
+        $skuPrefixes = $this->normalizeArrayOption($input->getOption(self::OPTION_SKU_PREFIX));
         $type = (string) $input->getOption(self::OPTION_TYPE);
 
         $reportHandle = null;
@@ -209,29 +222,38 @@ class QueueImageMetadataCommand extends Command
             if ($reportHandle === false) {
                 throw new \RuntimeException(sprintf('Unable to write report: %s', $absoluteReportPath));
             }
-            fputcsv($reportHandle, ['product_id', 'sku', 'type', 'missing_score', 'missing_fields', 'queue_status']);
+            fputcsv(
+                $reportHandle,
+                ['product_id', 'sku', 'type', 'missing_score', 'missing_fields', 'queue_status'],
+                self::CSV_DELIMITER,
+                self::CSV_ENCLOSURE,
+                self::CSV_ESCAPE
+            );
         }
 
+        $clearedRows = 0;
         if ($rebuild) {
-            $matchedProductIds = $this->getMatchedProductIds($productIds, $skus, $type, $limit);
-            if (!empty($matchedProductIds)) {
-                $this->queueManager->clear($matchedProductIds);
-            }
+            $clearedRows = $this->queueManager->clear();
         }
 
         $summary = [
             'scanned' => 0,
+            'included' => 0,
+            'cleared' => $clearedRows,
             'queued' => 0,
             'reported' => 0,
             'skipped_zero_score' => 0,
+            'skipped_below_min_score' => 0,
+            'min_score' => $minScore,
             'report' => $reportPath,
         ];
 
         $pageSize = $this->getPageSize($limit);
-        $collection = $this->createCollection($productIds, $skus, $type, $limit);
-        $lastPage = $limit > 0 ? (int) ceil($limit / $pageSize) : (int) $collection->getLastPageNumber();
+        $collection = $this->createCollection($productIds, $skus, $skuPrefixes, $type, $limit);
+        $lastPage = (int) $collection->getLastPageNumber();
+        $candidates = [];
         for ($page = 1; $page <= $lastPage; $page++) {
-            $collection = $this->createCollection($productIds, $skus, $type, $limit);
+            $collection = $this->createCollection($productIds, $skus, $skuPrefixes, $type, $limit);
             $collection->setPageSize($pageSize);
             $collection->setCurPage($page);
             $collection->load();
@@ -241,61 +263,54 @@ class QueueImageMetadataCommand extends Command
                 $pageProductIds[] = (int) $product->getId();
             }
             $statuses = $this->queueManager->getStatusesByProductIds($pageProductIds);
-            $rows = [];
 
             foreach ($collection as $product) {
-                if ($limit > 0 && $summary['scanned'] >= $limit) {
-                    break;
-                }
                 $productId = (int) $product->getId();
                 $score = $this->missingDataScorer->score($product);
                 $missingScore = (int) $score['score'];
                 $missingFields = $score['fields'];
                 $summary['scanned']++;
 
-                if ($missingScore <= 0 && !$includeZeroScore) {
-                    $summary['skipped_zero_score']++;
+                if ($missingScore < $minScore) {
+                    if ($missingScore <= 0) {
+                        $summary['skipped_zero_score']++;
+                    } else {
+                        $summary['skipped_below_min_score']++;
+                    }
                     continue;
                 }
 
-                if ($reportHandle !== null) {
-                    fputcsv($reportHandle, [
-                        $productId,
-                        (string) $product->getSku(),
-                        (string) $product->getTypeId(),
-                        $missingScore,
-                        implode('|', $missingFields),
-                        $statuses[$productId] ?? '',
-                    ]);
-                    $summary['reported']++;
+                $status = $statuses[$productId] ?? '';
+                if ($reportHandle === null && ($rebuild || $append) && $status === QueueManager::STATUS_PROCESSING) {
+                    continue;
                 }
 
-                if ($rebuild || $append) {
-                    if (($statuses[$productId] ?? null) === QueueManager::STATUS_PROCESSING) {
-                        continue;
-                    }
-
-                    $rows[] = [
-                        'product_id' => $productId,
-                        'sku' => (string) $product->getSku(),
-                        'product_type' => (string) $product->getTypeId(),
-                        'missing_score' => $missingScore,
-                        'missing_fields' => $missingFields,
-                    ];
-                }
+                $candidates[] = [
+                    'product_id' => $productId,
+                    'sku' => (string) $product->getSku(),
+                    'product_type' => (string) $product->getTypeId(),
+                    'missing_score' => $missingScore,
+                    'missing_fields' => $missingFields,
+                    'status' => $status,
+                ];
             }
 
-            if (!empty($rows)) {
-                usort($rows, function (array $left, array $right): int {
-                    if ($left['missing_score'] !== $right['missing_score']) {
-                        return $right['missing_score'] <=> $left['missing_score'];
-                    }
-                    return $left['product_id'] <=> $right['product_id'];
-                });
-                $this->queueManager->enqueueRows($rows);
-                $summary['queued'] += count($rows);
-            }
             $collection->clear();
+        }
+
+        $selectedCandidates = $this->limitCandidatesByPriority($candidates, $limit);
+        $summary['included'] = count($selectedCandidates);
+        if ($reportHandle !== null) {
+            $this->writeCandidateReportRows($reportHandle, $selectedCandidates);
+            $summary['reported'] = count($selectedCandidates);
+        }
+
+        if ($rebuild || $append) {
+            $rows = $this->getQueueableCandidateRows($selectedCandidates);
+            if (!empty($rows)) {
+                $this->queueManager->enqueueRows($rows);
+                $summary['queued'] = count($rows);
+            }
         }
 
         if ($reportHandle !== null) {
@@ -306,24 +321,96 @@ class QueueImageMetadataCommand extends Command
     }
 
     /**
+     * Sort candidates by processing priority and apply the requested inclusion limit.
+     *
+     * @param array<int, array<string, mixed>> $candidates
+     * @param int $limit
+     * @return array<int, array<string, mixed>>
+     */
+    private function limitCandidatesByPriority(array $candidates, int $limit): array
+    {
+        usort($candidates, function (array $left, array $right): int {
+            if ((int) $left['missing_score'] !== (int) $right['missing_score']) {
+                return (int) $right['missing_score'] <=> (int) $left['missing_score'];
+            }
+
+            return (int) $left['product_id'] <=> (int) $right['product_id'];
+        });
+
+        return $limit > 0 ? array_slice($candidates, 0, $limit) : $candidates;
+    }
+
+    /**
+     * Write selected candidate rows to a CSV report.
+     *
+     * @param resource $reportHandle
+     * @param array<int, array<string, mixed>> $candidates
+     * @return void
+     */
+    private function writeCandidateReportRows($reportHandle, array $candidates): void
+    {
+        foreach ($candidates as $candidate) {
+            fputcsv(
+                $reportHandle,
+                [
+                    (int) $candidate['product_id'],
+                    (string) $candidate['sku'],
+                    (string) $candidate['product_type'],
+                    (int) $candidate['missing_score'],
+                    implode('|', $candidate['missing_fields']),
+                    (string) ($candidate['status'] ?? ''),
+                ],
+                self::CSV_DELIMITER,
+                self::CSV_ENCLOSURE,
+                self::CSV_ESCAPE
+            );
+        }
+    }
+
+    /**
+     * Convert selected candidates to queue rows, skipping protected processing rows.
+     *
+     * @param array<int, array<string, mixed>> $candidates
+     * @return array<int, array<string, mixed>>
+     */
+    private function getQueueableCandidateRows(array $candidates): array
+    {
+        $rows = [];
+        foreach ($candidates as $candidate) {
+            if (($candidate['status'] ?? '') === QueueManager::STATUS_PROCESSING) {
+                continue;
+            }
+
+            $rows[] = [
+                'product_id' => (int) $candidate['product_id'],
+                'sku' => (string) $candidate['sku'],
+                'product_type' => (string) $candidate['product_type'],
+                'missing_score' => (int) $candidate['missing_score'],
+                'missing_fields' => $candidate['missing_fields'],
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
      * Create a product collection selecting only fields needed for scoring and reporting.
      *
      * @param int[] $productIds
      * @param string[] $skus
+     * @param string[] $skuPrefixes
      * @param string $type
      * @param int $limit
      * @return Collection
      */
-    private function createCollection(array $productIds, array $skus, string $type, int $limit): Collection
+    private function createCollection(array $productIds, array $skus, array $skuPrefixes, string $type, int $limit): Collection
     {
         $collection = $this->collectionFactory->create();
         $collection->addAttributeToSelect($this->getAttributesToSelect());
         if (!empty($productIds)) {
             $collection->addFieldToFilter('entity_id', ['in' => $productIds]);
         }
-        if (!empty($skus)) {
-            $collection->addAttributeToFilter('sku', ['in' => $skus]);
-        }
+        $this->addSkuFilters($collection, $skus, $skuPrefixes);
         if ($type !== '') {
             $collection->addFieldToFilter('type_id', $type);
         }
@@ -331,6 +418,41 @@ class QueueImageMetadataCommand extends Command
         $collection->setPageSize($this->getPageSize($limit));
 
         return $collection;
+    }
+
+    /**
+     * Add exact and prefix SKU filters to a product collection.
+     *
+     * @param Collection $collection
+     * @param string[] $skus
+     * @param string[] $skuPrefixes
+     * @return void
+     */
+    private function addSkuFilters(Collection $collection, array $skus, array $skuPrefixes): void
+    {
+        $conditions = [];
+        if (!empty($skus)) {
+            $conditions[] = ['in' => $skus];
+        }
+        foreach ($skuPrefixes as $skuPrefix) {
+            $conditions[] = ['like' => $this->escapeLikePrefix($skuPrefix) . '%'];
+        }
+        if (empty($conditions)) {
+            return;
+        }
+
+        $collection->addAttributeToFilter('sku', count($conditions) === 1 ? reset($conditions) : $conditions);
+    }
+
+    /**
+     * Escape literal SKU prefix wildcards before using a SQL LIKE suffix match.
+     *
+     * @param string $skuPrefix
+     * @return string
+     */
+    private function escapeLikePrefix(string $skuPrefix): string
+    {
+        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $skuPrefix);
     }
 
     /**
@@ -342,37 +464,6 @@ class QueueImageMetadataCommand extends Command
             ['name', 'image', 'small_image', 'thumbnail'],
             array_keys($this->helper->getProductImageAnalysisAttributeConfig())
         )));
-    }
-
-    /**
-     * @param int[] $productIds
-     * @param string[] $skus
-     * @param string $type
-     * @param int $limit
-     * @return int[]
-     */
-    private function getMatchedProductIds(array $productIds, array $skus, string $type, int $limit): array
-    {
-        $matchedProductIds = [];
-        $pageSize = $this->getPageSize($limit);
-        $collection = $this->createCollection($productIds, $skus, $type, $limit);
-        $lastPage = $limit > 0 ? (int) ceil($limit / $pageSize) : (int) $collection->getLastPageNumber();
-
-        for ($page = 1; $page <= $lastPage; $page++) {
-            $collection = $this->createCollection($productIds, $skus, $type, $limit);
-            $collection->setPageSize($pageSize);
-            $collection->setCurPage($page);
-            $collection->load();
-            foreach ($collection->getColumnValues('entity_id') as $productId) {
-                if ($limit > 0 && count($matchedProductIds) >= $limit) {
-                    break 2;
-                }
-                $matchedProductIds[] = (int) $productId;
-            }
-            $collection->clear();
-        }
-
-        return $matchedProductIds;
     }
 
     /**
@@ -512,15 +603,51 @@ class QueueImageMetadataCommand extends Command
     private function writeBuildSummary(OutputInterface $output, array $summary): void
     {
         $output->writeln(sprintf(
-            '<info>Queue audit complete. Scanned: %d, queued: %d, reported: %d, zero-score skipped: %d.</info>',
+            '<info>Queue audit complete. Scanned: %d, included: %d, cleared: %d, queued: %d, reported: %d, below min-score skipped: %d, zero-score skipped: %d.</info>',
             $summary['scanned'],
+            $summary['included'],
+            $summary['cleared'],
             $summary['queued'],
             $summary['reported'],
+            $summary['skipped_below_min_score'],
             $summary['skipped_zero_score']
         ));
+        $output->writeln(sprintf('<info>Minimum score: %d</info>', $summary['min_score']));
         if (!empty($summary['report'])) {
             $output->writeln(sprintf('<info>Report: %s</info>', $summary['report']));
         }
+    }
+
+    /**
+     * Resolve the effective minimum score for queue/report inclusion.
+     *
+     * @param InputInterface $input
+     * @param bool $includeZeroScore
+     * @return int
+     */
+    private function getMinimumScore(InputInterface $input, bool $includeZeroScore): int
+    {
+        $minScore = $input->getOption(self::OPTION_MIN_SCORE);
+        if ($minScore === null || $minScore === '') {
+            return $includeZeroScore ? 0 : 1;
+        }
+
+        return max(0, (int) $minScore);
+    }
+
+    /**
+     * Validate nullable non-negative integer command option values.
+     *
+     * @param mixed $value
+     * @return bool
+     */
+    private function isValidNonNegativeIntegerOption($value): bool
+    {
+        if ($value === null || $value === '') {
+            return true;
+        }
+
+        return is_scalar($value) && preg_match('/^\d+$/', (string) $value) === 1;
     }
 
     /**
