@@ -469,28 +469,28 @@ class Data extends AbstractHelper
      */
     public function getProductImageAnalysisAttributeConfig(): array
     {
-        $configured = $this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_ATTRIBUTES);
+        $configured = $this->normalizeImageAnalysisAttributeRows(
+            $this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_ATTRIBUTES)
+        );
         $attributes = [];
 
-        if (is_array($configured)) {
-            foreach ($configured as $row) {
-                if (!is_array($row)) {
-                    continue;
-                }
-                $code = trim((string) ($row['attribute'] ?? ''));
-                $instruction = trim((string) ($row['instruction'] ?? ''));
-                if ($code !== '' && $code !== '__empty' && $instruction !== '') {
-                    $attributes[$code] = [
-                        'attribute' => $code,
-                        'instruction' => $instruction,
-                        'policy' => $this->normalizeImageAnalysisPolicy(
-                            (string) ($row['policy'] ?? $this->getDefaultImageAnalysisPolicy($code))
-                        ),
-                        'allow_new_options' => $this->normalizeBoolean(
-                            $row['allow_new_options'] ?? $this->getDefaultAllowNewOptions($code)
-                        ),
-                    ];
-                }
+        foreach ($configured as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $code = trim((string) ($row['attribute'] ?? ''));
+            $instruction = trim((string) ($row['instruction'] ?? ''));
+            if ($code !== '' && $code !== '__empty' && $instruction !== '') {
+                $attributes[$code] = [
+                    'attribute' => $code,
+                    'instruction' => $instruction,
+                    'policy' => $this->normalizeImageAnalysisPolicy(
+                        (string) ($row['policy'] ?? $this->getDefaultImageAnalysisPolicy($code))
+                    ),
+                    'allow_new_options' => $this->normalizeBoolean(
+                        $row['allow_new_options'] ?? $this->getDefaultAllowNewOptions($code)
+                    ),
+                ];
             }
         }
 
@@ -499,6 +499,35 @@ class Data extends AbstractHelper
         }
 
         return $this->getDefaultImageAnalysisAttributeConfig();
+    }
+
+    /**
+     * Normalize dynamic image-analysis rows from Magento config storage.
+     *
+     * ArraySerialized config values can arrive as an array, JSON string, or legacy
+     * PHP serialized string depending on Magento version/cache path. Parse all
+     * supported shapes before falling back to hardcoded defaults.
+     *
+     * @param mixed $configured
+     * @return array<int|string, mixed>
+     */
+    private function normalizeImageAnalysisAttributeRows($configured): array
+    {
+        if (is_array($configured)) {
+            return $configured;
+        }
+
+        if (!is_string($configured) || trim($configured) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($configured, true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+
+        $unserialized = @unserialize($configured, ['allowed_classes' => false]);
+        return is_array($unserialized) ? $unserialized : [];
     }
 
     /**

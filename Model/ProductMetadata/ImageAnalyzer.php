@@ -72,14 +72,15 @@ class ImageAnalyzer
      *
      * @param ProductInterface $product
      * @param callable|null $debugLogger Receives request/response debug labels and raw content.
+     * @param string $previousProductName Context from the product ID immediately before the current product.
      * @return array<string, mixed>
      * @throws QueryException
      */
-    public function analyze(ProductInterface $product, ?callable $debugLogger = null): array
+    public function analyze(ProductInterface $product, ?callable $debugLogger = null, string $previousProductName = ''): array
     {
         $image = $this->imageReader->read($product);
         if ($this->helper->getProvider() === 'ollama') {
-            $payload = $this->buildOllamaPayload($product, $image['data']);
+            $payload = $this->buildOllamaPayload($product, $image['data'], $previousProductName);
             $endpoint = $this->helper->getOllamaEndpointUrl('/api/chat');
             $this->writeDebug($debugLogger, 'Ollama request', "POST " . $endpoint . "\nContent-Type: application/json\n\n" . $payload);
 
@@ -90,7 +91,7 @@ class ImageAnalyzer
             return $this->validateOllamaResponse();
         }
 
-        $payload = $this->buildPayload($product, $image['data'], $image['mimeType']);
+        $payload = $this->buildPayload($product, $image['data'], $image['mimeType'], $previousProductName);
         $endpoint = $this->helper->getOpenAIEndpointUrl('/v1/chat/completions');
         $this->writeDebug($debugLogger, 'OpenAI-compatible request', "POST " . $endpoint . "\nContent-Type: application/json\n\n" . $payload);
 
@@ -124,12 +125,13 @@ class ImageAnalyzer
      * @param ProductInterface $product
      * @param string $imageData
      * @param string $mimeType
+     * @param string $previousProductName
      * @return string
      */
-    private function buildPayload(ProductInterface $product, string $imageData, string $mimeType): string
+    private function buildPayload(ProductInterface $product, string $imageData, string $mimeType, string $previousProductName = ''): string
     {
         $targetAttributes = $this->helper->getProductImageAnalysisAttributeConfig();
-        $prompt = $this->buildPrompt($product, $targetAttributes);
+        $prompt = $this->buildPrompt($product, $targetAttributes, $previousProductName);
 
         return $this->json->serialize([
             'model' => $this->helper->getModel(),
@@ -166,13 +168,14 @@ class ImageAnalyzer
      *
      * @param ProductInterface $product
      * @param string $imageData
+     * @param string $previousProductName
      * @return string
      */
-    private function buildOllamaPayload(ProductInterface $product, string $imageData): string
+    private function buildOllamaPayload(ProductInterface $product, string $imageData, string $previousProductName = ''): string
     {
         $targetAttributes = $this->helper->getProductImageAnalysisAttributeConfig();
         $schema = $this->buildResponseSchema($targetAttributes);
-        $prompt = $this->buildPrompt($product, $targetAttributes);
+        $prompt = $this->buildPrompt($product, $targetAttributes, $previousProductName);
         $prompt = $this->appendResponseSchemaToPrompt($prompt, $schema);
 
         return $this->json->serialize([
@@ -325,9 +328,10 @@ class ImageAnalyzer
      *
      * @param ProductInterface $product
      * @param array<string, array{attribute: string, instruction: string, policy: string, allow_new_options: bool}> $targetAttributes
+     * @param string $previousProductName
      * @return string
      */
-    private function buildPrompt(ProductInterface $product, array $targetAttributes): string
+    private function buildPrompt(ProductInterface $product, array $targetAttributes, string $previousProductName = ''): string
     {
         $lines = [];
         $lines[] = $this->helper->getProductImageAnalysisPrompt();
@@ -361,6 +365,15 @@ class ImageAnalyzer
         $lines[] = '- Keep meta_title under 60 characters when possible and meta_description under 155 characters when possible.';
         $lines[] = '- Do not repeat the same keyword across primary, secondary, and tertiary keyword fields.';
         $lines[] = '- Return empty arrays for keyword fields when no specific non-generic terms can be justified.';
+
+        $normalizedPreviousProductName = preg_replace('/[\p{C}\s]+/u', ' ', $previousProductName);
+        $previousProductName = is_string($normalizedPreviousProductName) ? trim($normalizedPreviousProductName) : '';
+        if ($previousProductName !== '') {
+            $lines[] = '';
+            $lines[] = 'Adjacent product ID context:';
+            $lines[] = '- previous product name from current product ID minus 1: ' . $previousProductName;
+            $lines[] = '- Use this only as weak sequence context for related images. Do not copy names, people, events, or doctrine unless the current image visibly supports them.';
+        }
 
         $lines[] = '';
         $lines[] = 'Existing product context. Use these values when helpful, especially when generating one blank field from other populated fields:';

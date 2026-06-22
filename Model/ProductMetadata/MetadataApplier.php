@@ -459,17 +459,44 @@ class MetadataApplier
             $sourceModel->setAttribute($attribute);
 
             foreach ($sourceModel->getAllOptions(true, false) as $option) {
-                $optionLabel = trim((string) $option['label']);
+                $optionLabel = $this->normalizeOptionLabel((string) $option['label']);
                 $value = (string) $option['value'];
                 if ($optionLabel === '' || $value === '') {
                     continue;
                 }
-                $this->attributeValues[$attributeId][strtolower($optionLabel)] = $option['value'];
+                $optionLabelKey = $this->getOptionLabelKey($optionLabel);
+                if (!isset($this->attributeValues[$attributeId][$optionLabelKey])
+                    || (int) $value < (int) $this->attributeValues[$attributeId][$optionLabelKey]
+                ) {
+                    $this->attributeValues[$attributeId][$optionLabelKey] = $option['value'];
+                }
                 $this->attributeLabels[$attributeId][$value] = $optionLabel;
             }
         }
 
-        return $this->attributeValues[$attributeId][strtolower($label)] ?? false;
+        return $this->attributeValues[$attributeId][$this->getOptionLabelKey($label)] ?? false;
+    }
+
+    /**
+     * Normalize an option label for display and duplicate-safe matching.
+     *
+     * @param string $label
+     * @return string
+     */
+    private function normalizeOptionLabel(string $label): string
+    {
+        return trim((string) preg_replace('/\s+/', ' ', $label));
+    }
+
+    /**
+     * Build a duplicate-safe option lookup key.
+     *
+     * @param string $label
+     * @return string
+     */
+    private function getOptionLabelKey(string $label): string
+    {
+        return strtolower($this->normalizeOptionLabel($label));
     }
 
     /**
@@ -523,19 +550,36 @@ class MetadataApplier
         string $policy,
         bool $force
     ) {
-        $generatedIds = array_values(array_unique(array_map('strval', $generatedIds)));
+        $generatedIds = $this->normalizeOptionIds($attributeCode, $generatedIds);
         if ($input === 'select') {
             return (string) reset($generatedIds);
         }
 
         if (!$force && in_array($policy, [HelperData::IMAGE_ANALYSIS_POLICY_MERGE, HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE], true)) {
-            $generatedIds = array_values(array_unique(array_merge(
+            $generatedIds = $this->normalizeOptionIds($attributeCode, array_merge(
                 $this->getSelectedOptionIds($product, $attributeCode),
                 $generatedIds
-            )));
+            ));
         }
 
         return implode(',', $generatedIds);
+    }
+
+    /**
+     * Normalize option IDs and collapse duplicate keyword labels to canonical IDs.
+     *
+     * @param string $attributeCode
+     * @param array<int, string|int> $optionIds
+     * @return string[]
+     */
+    private function normalizeOptionIds(string $attributeCode, array $optionIds): array
+    {
+        $optionIds = array_values(array_unique(array_filter(array_map('trim', array_map('strval', $optionIds)), 'strlen')));
+        if (!isset(self::KEYWORD_ATTRIBUTE_CODES[$attributeCode])) {
+            return $optionIds;
+        }
+
+        return $this->translateKeywordOptionIds($attributeCode, $optionIds);
     }
 
     /**
@@ -645,8 +689,11 @@ class MetadataApplier
     {
         $translated = [];
         foreach ($ids as $id) {
-            if (!empty($this->getOptionLabelsByIds(self::SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE, [$id]))) {
-                $translated[] = (string) $id;
+            $sharedLabels = $this->getOptionLabelsByIds(self::SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE, [$id]);
+            $sharedLabel = $sharedLabels[0] ?? '';
+            if ($sharedLabel !== '') {
+                $sharedOptionId = $this->getOptionId(self::SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE, $sharedLabel);
+                $translated[] = $sharedOptionId ? (string) $sharedOptionId : (string) $id;
                 continue;
             }
 
@@ -1118,6 +1165,10 @@ class MetadataApplier
     public function canUpdateConfiguredAttribute(ProductInterface $product, string $attributeCode, bool $force, string $policy): bool
     {
         if ($force) {
+            return true;
+        }
+
+        if ($attributeCode === 'name' && $this->isPlaceholderTitle($product)) {
             return true;
         }
 

@@ -40,6 +40,7 @@ class GenerateImageMetadataCommand extends Command
     private const OPTION_SLEEP = 'sleep';
     private const OPTION_STALE_AFTER = 'stale-after';
     private const OPTION_MAX_ATTEMPTS = 'max-attempts';
+    private const DEBUG_BASE64_PREVIEW_LENGTH = 96;
 
     /**
      * @var CollectionFactory
@@ -188,7 +189,11 @@ class GenerateImageMetadataCommand extends Command
                     continue;
                 }
 
-                $metadata = $this->imageAnalyzer->analyze($product, $debugLogger);
+                $metadata = $this->imageAnalyzer->analyze(
+                    $product,
+                    $debugLogger,
+                    $this->resolvePreviousProductNameContext((int) $product->getId())
+                );
                 $changes = $this->metadataApplier->apply($product, $metadata, $force, $dryRun);
 
                 if (empty($changes)) {
@@ -305,9 +310,95 @@ class GenerateImageMetadataCommand extends Command
 
         return function (string $label, string $content) use ($output): void {
             $output->writeln(sprintf('<comment>--- MageAI %s ---</comment>', $label));
-            $output->writeln($content, OutputInterface::OUTPUT_RAW);
+            $output->writeln($this->truncateDebugImageContent($label, $content), OutputInterface::OUTPUT_RAW);
             $output->writeln('');
         };
+    }
+
+    /**
+     * Truncate inline image data before printing verbose request payloads.
+     *
+     * The HTTP request itself still uses the full base64 string; only the -vvv
+     * console copy is shortened so logs remain readable.
+     *
+     * @param string $label
+     * @param string $content
+     * @return string
+     */
+    private function truncateDebugImageContent(string $label, string $content): string
+    {
+        if (stripos($label, 'request') === false) {
+            return $content;
+        }
+
+        $parts = explode("\n\n", $content, 2);
+        if (count($parts) !== 2) {
+            return $content;
+        }
+
+        $payload = json_decode($parts[1], true);
+        if (!is_array($payload)) {
+            return $content;
+        }
+
+        $json = json_encode($this->truncateDebugPayloadValue($payload), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            return $content;
+        }
+
+        return $parts[0] . "\n\n" . $json;
+    }
+
+    /**
+     * Recursively truncate OpenAI image URLs and Ollama images arrays.
+     *
+     * @param mixed $value
+     * @return mixed
+     */
+    private function truncateDebugPayloadValue($value)
+    {
+        if (is_array($value)) {
+            foreach ($value as $key => $item) {
+                if ($key === 'images' && is_array($item)) {
+                    foreach ($item as $index => $image) {
+                        $value[$key][$index] = is_string($image) ? $this->truncateDebugBase64($image) : $image;
+                    }
+                    continue;
+                }
+
+                $value[$key] = $this->truncateDebugPayloadValue($item);
+            }
+
+            return $value;
+        }
+
+        if (!is_string($value)) {
+            return $value;
+        }
+
+        $base64Marker = ';base64,';
+        $base64Position = strpos($value, $base64Marker);
+        if (strpos($value, 'data:') === 0 && $base64Position !== false) {
+            $prefixLength = $base64Position + strlen($base64Marker);
+            return substr($value, 0, $prefixLength) . $this->truncateDebugBase64(substr($value, $prefixLength));
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param string $base64
+     * @return string
+     */
+    private function truncateDebugBase64(string $base64): string
+    {
+        $length = strlen($base64);
+        if ($length <= self::DEBUG_BASE64_PREVIEW_LENGTH) {
+            return $base64;
+        }
+
+        return substr($base64, 0, self::DEBUG_BASE64_PREVIEW_LENGTH)
+            . sprintf('... [truncated %d base64 chars]', $length - self::DEBUG_BASE64_PREVIEW_LENGTH);
     }
 
     /**
@@ -330,7 +421,11 @@ class GenerateImageMetadataCommand extends Command
         try {
             $product = $this->productRepository->getById($productId, false, 0, true);
             $product->setStoreId(0);
-            $metadata = $this->imageAnalyzer->analyze($product, $this->getImageAnalyzerDebugLogger($output));
+            $metadata = $this->imageAnalyzer->analyze(
+                $product,
+                $this->getImageAnalyzerDebugLogger($output),
+                $this->resolvePreviousProductNameContext($productId)
+            );
             $changes = $this->metadataApplier->apply($product, $metadata, $force, $dryRun);
             $duration = number_format(microtime(true) - $startedAt, 2);
 
@@ -444,6 +539,29 @@ class GenerateImageMetadataCommand extends Command
         }
 
         return $attributes;
+    }
+
+    /**
+     * Resolve context from the product whose ID immediately precedes the current product ID.
+     *
+     * @param int $productId
+     * @return string
+     */
+    private function resolvePreviousProductNameContext(int $productId): string
+    {
+        $previousProductId = $productId - 1;
+        if ($previousProductId <= 0) {
+            return '';
+        }
+
+        try {
+            $previousProduct = $this->productRepository->getById($previousProductId, false, 0, true);
+        } catch (\Exception $e) {
+            return '';
+        }
+
+        $name = trim((string) $previousProduct->getName());
+        return $name === '' ? '' : mb_substr($name, 0, 160);
     }
 
     /**

@@ -14,6 +14,8 @@ use Mageprince\MageAI\Model\ProductMetadata\MetadataApplier;
 
 class MissingDataScorer
 {
+    private const NAME_PLACEHOLDER_SCORE_BONUS = 5;
+
     /**
      * @var HelperData
      */
@@ -53,7 +55,7 @@ class MissingDataScorer
                 continue;
             }
 
-            $fieldScore = $this->getFieldScore($product, $attributeCode, $policy);
+            $fieldScore = $this->getFieldScore($product, $attributeCode);
             if ($fieldScore <= 0) {
                 continue;
             }
@@ -73,27 +75,20 @@ class MissingDataScorer
      *
      * @param ProductInterface $product
      * @param string $attributeCode
-     * @param string $policy
      * @return int
      */
-    private function getFieldScore(ProductInterface $product, string $attributeCode, string $policy): int
+    private function getFieldScore(ProductInterface $product, string $attributeCode): int
     {
         $baseScore = $this->getBaseScore($attributeCode);
-        $hasValue = $this->hasValue($product->getData($attributeCode));
+        if ($attributeCode === 'name' && $this->isPlaceholderTitle($product)) {
+            return $baseScore + self::NAME_PLACEHOLDER_SCORE_BONUS;
+        }
 
-        if (!$hasValue) {
+        if (!$this->hasValue($product->getData($attributeCode))) {
             return $baseScore;
         }
 
-        if ($policy === HelperData::IMAGE_ANALYSIS_POLICY_PLACEHOLDER && $attributeCode === 'name') {
-            return $this->isPlaceholderTitle($product) ? $baseScore : 0;
-        }
-
-        if (in_array($policy, [HelperData::IMAGE_ANALYSIS_POLICY_MERGE, HelperData::IMAGE_ANALYSIS_POLICY_MERGE_PROMOTE], true)) {
-            return 1;
-        }
-
-        return $policy === HelperData::IMAGE_ANALYSIS_POLICY_REPLACE ? max(1, (int) floor($baseScore / 2)) : 0;
+        return 0;
     }
 
     /**
