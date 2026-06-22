@@ -83,6 +83,8 @@ Follow these guidelines:
             <product_image_analysis>
                 <max_tokens>2000</max_tokens>
                 <temperature>0</temperature>
+                <ollama_num_ctx>8192</ollama_num_ctx>
+                <ollama_think>0</ollama_think>
                 <prompt><![CDATA[Analyze the product image and generate catalog attribute values for an ecommerce product.
 
 Guidelines:

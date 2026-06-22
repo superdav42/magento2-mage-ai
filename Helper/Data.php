@@ -62,7 +62,11 @@ class Data extends AbstractHelper
     public const XML_PATH_IMAGE_ANALYSIS_PROMPT = 'mageai/product_image_analysis/prompt';
     public const XML_PATH_IMAGE_ANALYSIS_MAX_TOKENS = 'mageai/product_image_analysis/max_tokens';
     public const XML_PATH_IMAGE_ANALYSIS_TEMPERATURE = 'mageai/product_image_analysis/temperature';
+    public const XML_PATH_IMAGE_ANALYSIS_OLLAMA_NUM_CTX = 'mageai/product_image_analysis/ollama_num_ctx';
+    public const XML_PATH_IMAGE_ANALYSIS_OLLAMA_THINK = 'mageai/product_image_analysis/ollama_think';
     public const XML_PATH_IMAGE_ANALYSIS_ATTRIBUTES = 'mageai/product_image_analysis/attributes';
+
+    private const DEFAULT_IMAGE_ANALYSIS_OLLAMA_NUM_CTX = 8192;
 
     /**
      * Get config value
@@ -419,6 +423,28 @@ class Data extends AbstractHelper
     {
         $value = $this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_TEMPERATURE);
         return $value === null || $value === '' ? 0.0 : (float) $value;
+    }
+
+    /**
+     * Get native Ollama context window size for product image metadata analysis.
+     *
+     * @return int
+     */
+    public function getProductImageAnalysisOllamaNumCtx(): int
+    {
+        $value = (int) ($this->getConfig(self::XML_PATH_IMAGE_ANALYSIS_OLLAMA_NUM_CTX)
+            ?: self::DEFAULT_IMAGE_ANALYSIS_OLLAMA_NUM_CTX);
+        return max(1, $value);
+    }
+
+    /**
+     * Check whether native Ollama thinking mode is enabled for product image metadata analysis.
+     *
+     * @return bool
+     */
+    public function isProductImageAnalysisOllamaThinkEnabled(): bool
+    {
+        return $this->scopeConfig->isSetFlag(self::XML_PATH_IMAGE_ANALYSIS_OLLAMA_THINK);
     }
 
     /**

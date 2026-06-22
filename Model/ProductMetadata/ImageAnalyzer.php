@@ -91,9 +91,12 @@ class ImageAnalyzer
         }
 
         $payload = $this->buildPayload($product, $image['data'], $image['mimeType']);
+        $endpoint = $this->helper->getOpenAIEndpointUrl('/v1/chat/completions');
+        $this->writeDebug($debugLogger, 'OpenAI-compatible request', "POST " . $endpoint . "\nContent-Type: application/json\n\n" . $payload);
 
         $this->setHeaders();
-        $this->curl->post($this->helper->getOpenAIEndpointUrl('/v1/chat/completions'), $payload);
+        $this->curl->post($endpoint, $payload);
+        $this->writeDebug($debugLogger, 'OpenAI-compatible response', "HTTP " . $this->curl->getStatus() . "\n\n" . $this->curl->getBody());
 
         return $this->validateResponse();
     }
@@ -174,6 +177,7 @@ class ImageAnalyzer
 
         return $this->json->serialize([
             'model' => $this->helper->getOllamaModel(),
+            'think' => $this->helper->isProductImageAnalysisOllamaThinkEnabled(),
             'messages' => [
                 ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
                 [
@@ -183,12 +187,23 @@ class ImageAnalyzer
                 ],
             ],
             'format' => $schema,
-            'options' => [
-                'temperature' => $this->helper->getProductImageAnalysisTemperature(),
-                'num_predict' => $this->helper->getProductImageAnalysisMaxTokens(),
-            ],
+            'options' => $this->buildOllamaOptions(),
             'stream' => false,
         ]);
+    }
+
+    /**
+     * Build Ollama generation options for schema-constrained image metadata.
+     *
+     * @return array<string, int|float>
+     */
+    private function buildOllamaOptions(): array
+    {
+        return [
+            'temperature' => $this->helper->getProductImageAnalysisTemperature(),
+            'num_ctx' => $this->helper->getProductImageAnalysisOllamaNumCtx(),
+            'num_predict' => $this->helper->getProductImageAnalysisMaxTokens(),
+        ];
     }
 
     /**
@@ -200,7 +215,7 @@ class ImageAnalyzer
      */
     private function appendResponseSchemaToPrompt(string $prompt, array $schema): string
     {
-        return $prompt . "\n\nReturn one JSON object that matches this JSON Schema exactly. Do not include markdown or explanatory text:\n"
+        return $prompt . "\n\nReturn the final JSON object immediately. Do not include reasoning, hidden thinking, markdown, or explanatory text. The JSON object must match this JSON Schema exactly:\n"
             . $this->json->serialize($schema);
     }
 
@@ -287,6 +302,17 @@ class ImageAnalyzer
 
         $content = $response['message']['content'] ?? '';
         if (!is_string($content) || trim($content) === '') {
+            $doneReason = $response['done_reason'] ?? '';
+            $thinking = $response['message']['thinking'] ?? '';
+            if ($doneReason === 'length' && is_string($thinking) && trim($thinking) !== '') {
+                throw new QueryException(__('Ollama returned thinking output but no JSON content before reaching the generation limit. Disable Ollama Thinking Mode for image metadata, raise Image Analysis Max Tokens, or use a non-thinking vision model.'));
+            }
+            if ($doneReason === 'length') {
+                throw new QueryException(__('Ollama reached the generation limit before returning image metadata JSON. Raise Image Analysis Max Tokens or use a model that produces shorter structured output.'));
+            }
+            if (is_string($thinking) && trim($thinking) !== '') {
+                throw new QueryException(__('Ollama returned thinking output but no image metadata JSON content. Use a non-thinking vision model or a model/runtime that supports think=false.'));
+            }
             throw new QueryException(__('No image metadata content was returned by the Ollama native endpoint.'));
         }
 
