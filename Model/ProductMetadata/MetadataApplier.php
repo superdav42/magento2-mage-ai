@@ -436,7 +436,20 @@ class MetadataApplier
      */
     private function getOptionId(string $attributeCode, string $label, bool $force = false)
     {
-        $attribute = $this->getAttribute($this->getOptionAttributeCode($attributeCode));
+        return $this->getOptionIdFromAttributeCode($this->getOptionAttributeCode($attributeCode), $label, $force);
+    }
+
+    /**
+     * Resolve an existing option ID by label for a specific option-owning attribute.
+     *
+     * @param string $optionAttributeCode
+     * @param string $label
+     * @param bool $force
+     * @return string|int|false
+     */
+    private function getOptionIdFromAttributeCode(string $optionAttributeCode, string $label, bool $force = false)
+    {
+        $attribute = $this->getAttribute($optionAttributeCode);
         $attributeId = $attribute->getAttributeId();
 
         if ($force || !isset($this->attributeValues[$attributeId])) {
@@ -614,9 +627,47 @@ class MetadataApplier
             return $ids;
         }
 
-        return array_values(array_filter($ids, function ($id) use ($attributeCode) {
-            return !empty($this->getOptionLabelsByIds($attributeCode, [$id]));
-        }));
+        return $this->translateKeywordOptionIds($attributeCode, $ids);
+    }
+
+    /**
+     * Translate legacy secondary/tertiary keyword IDs to shared keyword IDs.
+     *
+     * Existing shared keyword IDs are preserved before legacy-label lookup so an
+     * old secondary/tertiary option ID that now exists in keywords is not changed.
+     * Unmapped legacy IDs are retained rather than dropped to avoid data loss.
+     *
+     * @param string $attributeCode
+     * @param string[] $ids
+     * @return string[]
+     */
+    private function translateKeywordOptionIds(string $attributeCode, array $ids): array
+    {
+        $translated = [];
+        foreach ($ids as $id) {
+            if (!empty($this->getOptionLabelsByIds(self::SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE, [$id]))) {
+                $translated[] = (string) $id;
+                continue;
+            }
+
+            if ($attributeCode === self::SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE) {
+                continue;
+            }
+
+            $legacyLabels = $this->getOptionLabelsByIds($attributeCode, [$id], false);
+            $legacyLabel = $legacyLabels[0] ?? '';
+            if ($legacyLabel !== '') {
+                $sharedOptionId = $this->getOptionId(self::SHARED_KEYWORD_OPTION_ATTRIBUTE_CODE, $legacyLabel);
+                if ($sharedOptionId) {
+                    $translated[] = (string) $sharedOptionId;
+                    continue;
+                }
+            }
+
+            $translated[] = (string) $id;
+        }
+
+        return array_values(array_unique($translated));
     }
 
     /**
@@ -636,13 +687,15 @@ class MetadataApplier
      *
      * @param string $attributeCode
      * @param array<int, string|int> $ids
+     * @param bool $useSharedOptionAttribute
      * @return string[]
      */
-    private function getOptionLabelsByIds(string $attributeCode, array $ids): array
+    private function getOptionLabelsByIds(string $attributeCode, array $ids, bool $useSharedOptionAttribute = true): array
     {
-        $attribute = $this->getAttribute($this->getOptionAttributeCode($attributeCode));
+        $optionAttributeCode = $useSharedOptionAttribute ? $this->getOptionAttributeCode($attributeCode) : $attributeCode;
+        $attribute = $this->getAttribute($optionAttributeCode);
         $attributeId = $attribute->getAttributeId();
-        $this->getOptionId($attributeCode, '__mageai_cache_warm__');
+        $this->getOptionIdFromAttributeCode($optionAttributeCode, '__mageai_cache_warm__');
 
         $labels = [];
         foreach ($ids as $id) {
