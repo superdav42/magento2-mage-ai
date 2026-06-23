@@ -10,7 +10,9 @@
 namespace Mageprince\MageAI\Console;
 
 use Magento\Catalog\Api\ProductRepositoryInterface;
+use Magento\Catalog\Api\Data\ProductInterface;
 use Magento\Catalog\Model\Product\Action as ProductAction;
+use Magento\Catalog\Model\Product\Attribute\Source\Status as ProductStatus;
 use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
 use Magento\Framework\App\Area;
 use Magento\Framework\App\State;
@@ -421,6 +423,18 @@ class GenerateImageMetadataCommand extends Command
         try {
             $product = $this->productRepository->getById($productId, false, 0, true);
             $product->setStoreId(0);
+            if ($this->isProductDisabled($product)) {
+                $duration = number_format(microtime(true) - $startedAt, 2);
+                if (!$dryRun) {
+                    $this->assertQueueLeaseUpdated(
+                        $this->queueManager->markSkipped($queueId, 'Product is disabled.', $lockedBy),
+                        $queueId
+                    );
+                }
+                $output->writeln(sprintf('[%d] Queue #%d skipped product %d (%s) in %ss: product is disabled.', $processed, $queueId, $productId, $product->getSku(), $duration));
+                return 'skipped';
+            }
+
             $metadata = $this->imageAnalyzer->analyze(
                 $product,
                 $this->getImageAnalyzerDebugLogger($output),
@@ -647,9 +661,10 @@ class GenerateImageMetadataCommand extends Command
     {
         $collection = $this->collectionFactory->create();
         $collection->addAttributeToSelect(array_unique(array_merge(
-            ['name', 'image', 'small_image', 'thumbnail'],
+            ['name', 'image', 'small_image', 'thumbnail', 'status'],
             array_keys($this->helper->getProductImageAnalysisAttributes())
         )));
+        $collection->addAttributeToFilter('status', ProductStatus::STATUS_ENABLED);
 
         if (!empty($productIds)) {
             $collection->addFieldToFilter('entity_id', ['in' => $productIds]);
@@ -669,6 +684,15 @@ class GenerateImageMetadataCommand extends Command
 
         $collection->load();
         return array_map('intval', $collection->getColumnValues('entity_id'));
+    }
+
+    /**
+     * @param ProductInterface $product
+     * @return bool
+     */
+    private function isProductDisabled(ProductInterface $product): bool
+    {
+        return (int) $product->getStatus() !== ProductStatus::STATUS_ENABLED;
     }
 
     /**
