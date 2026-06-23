@@ -11,6 +11,7 @@ namespace Mageprince\MageAI\Console;
 
 use Magento\Catalog\Model\ResourceModel\Product\Collection;
 use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
+use Magento\Catalog\Model\Product\Attribute\Source\Status as ProductStatus;
 use Magento\Framework\App\Area;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\App\State;
@@ -419,6 +420,7 @@ class QueueImageMetadataCommand extends Command
     {
         $collection = $this->collectionFactory->create();
         $collection->addAttributeToSelect($this->getAttributesToSelect());
+        $collection->addAttributeToFilter('status', ProductStatus::STATUS_ENABLED);
         if (!empty($productIds)) {
             $collection->addFieldToFilter('entity_id', ['in' => $productIds]);
         }
@@ -473,7 +475,7 @@ class QueueImageMetadataCommand extends Command
     private function getAttributesToSelect(): array
     {
         return array_values(array_unique(array_merge(
-            ['name', 'image', 'small_image', 'thumbnail'],
+            ['name', 'image', 'small_image', 'thumbnail', 'status'],
             array_keys($this->helper->getProductImageAnalysisAttributeConfig())
         )));
     }
