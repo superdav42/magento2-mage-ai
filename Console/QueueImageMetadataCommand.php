@@ -269,6 +269,10 @@ class QueueImageMetadataCommand extends Command
 
             foreach ($collection as $product) {
                 $productId = (int) $product->getId();
+                if ((int) $product->getStatus() !== ProductStatus::STATUS_ENABLED) {
+                    continue;
+                }
+
                 $score = $this->missingDataScorer->score($product);
                 $missingScore = (int) $score['score'];
                 $missingFields = $score['fields'];
@@ -420,7 +424,9 @@ class QueueImageMetadataCommand extends Command
     {
         $collection = $this->collectionFactory->create();
         $collection->addAttributeToSelect($this->getAttributesToSelect());
-        $collection->addAttributeToFilter('status', ProductStatus::STATUS_ENABLED);
+        // Avoid filtering status in SQL here. MariaDB 10.6 can choose a very
+        // slow index_merge plan for Magento's EAV status joins; status is
+        // already selected and filtered in PHP while scoring.
         if (!empty($productIds)) {
             $collection->addFieldToFilter('entity_id', ['in' => $productIds]);
         }
