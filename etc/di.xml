@@ -17,4 +17,25 @@
             </argument>
         </arguments>
     </type>
+    <type name="Magento\Framework\App\CacheInterface">
+        <plugin name="mageai_skip_cache_interface_clean" type="Mageprince\MageAI\Plugin\Cache\SkipCacheInterfaceCleanPlugin"/>
+    </type>
+    <type name="Magento\Framework\App\Cache\Proxy">
+        <plugin name="mageai_skip_cache_proxy_clean" type="Mageprince\MageAI\Plugin\Cache\SkipCacheInterfaceCleanPlugin"/>
+    </type>
+    <type name="Magento\Framework\App\Cache\Type\AccessProxy">
+        <plugin name="mageai_skip_cache_access_proxy_clean" type="Mageprince\MageAI\Plugin\Cache\SkipCacheAccessProxyCleanPlugin"/>
+    </type>
+    <type name="Magento\Framework\App\Cache\Manager">
+        <plugin name="mageai_skip_cache_manager_flush" type="Mageprince\MageAI\Plugin\Cache\SkipCacheManagerPlugin"/>
+    </type>
+    <type name="Magento\Framework\App\Cache\TypeListInterface">
+        <plugin name="mageai_skip_cache_type_clean" type="Mageprince\MageAI\Plugin\Cache\SkipCacheTypeListPlugin"/>
+    </type>
+    <type name="Magento\Framework\App\Cache\TypeList">
+        <plugin name="mageai_skip_cache_type_list_clean" type="Mageprince\MageAI\Plugin\Cache\SkipCacheTypeListPlugin"/>
+    </type>
+    <type name="Magento\Framework\App\Cache\FlushCacheByTags">
+        <plugin name="mageai_skip_cache_by_tags" type="Mageprince\MageAI\Plugin\Cache\SkipFlushCacheByTagsPlugin"/>
+    </type>
 </config>
