@@ -15,9 +15,11 @@ use Magento\Catalog\Model\Product\Action as ProductAction;
 use Magento\Catalog\Model\Product\Attribute\Source\Status as ProductStatus;
 use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
 use Magento\Framework\App\Area;
+use Magento\Framework\App\ObjectManager;
 use Magento\Framework\App\State;
 use Magento\Framework\Exception\LocalizedException;
 use Mageprince\MageAI\Helper\Data as HelperData;
+use Mageprince\MageAI\Model\Cache\FlushSkipper;
 use Mageprince\MageAI\Model\ProductMetadata\ImageAnalyzer;
 use Mageprince\MageAI\Model\ProductMetadata\MetadataApplier;
 use Mageprince\MageAI\Model\ProductMetadata\Queue\QueueManager;
@@ -42,6 +44,7 @@ class GenerateImageMetadataCommand extends Command
     private const OPTION_SLEEP = 'sleep';
     private const OPTION_STALE_AFTER = 'stale-after';
     private const OPTION_MAX_ATTEMPTS = 'max-attempts';
+    private const OPTION_SKIP_CACHE_FLUSH = 'skip-cache-flush';
     private const DEBUG_BASE64_PREVIEW_LENGTH = 96;
 
     /**
@@ -85,6 +88,11 @@ class GenerateImageMetadataCommand extends Command
     protected $queueManager;
 
     /**
+     * @var FlushSkipper
+     */
+    protected $cacheFlushSkipper;
+
+    /**
      * @param CollectionFactory $collectionFactory
      * @param ProductRepositoryInterface $productRepository
      * @param ProductAction $productAction
@@ -93,6 +101,7 @@ class GenerateImageMetadataCommand extends Command
      * @param ImageAnalyzer $imageAnalyzer
      * @param MetadataApplier $metadataApplier
      * @param QueueManager $queueManager
+     * @param FlushSkipper|null $cacheFlushSkipper
      */
     public function __construct(
         CollectionFactory $collectionFactory,
@@ -102,7 +111,8 @@ class GenerateImageMetadataCommand extends Command
         HelperData $helper,
         ImageAnalyzer $imageAnalyzer,
         MetadataApplier $metadataApplier,
-        QueueManager $queueManager
+        QueueManager $queueManager,
+        ?FlushSkipper $cacheFlushSkipper = null
     ) {
         $this->collectionFactory = $collectionFactory;
         $this->productRepository = $productRepository;
@@ -112,6 +122,7 @@ class GenerateImageMetadataCommand extends Command
         $this->imageAnalyzer = $imageAnalyzer;
         $this->metadataApplier = $metadataApplier;
         $this->queueManager = $queueManager;
+        $this->cacheFlushSkipper = $cacheFlushSkipper ?: ObjectManager::getInstance()->get(FlushSkipper::class);
         parent::__construct();
     }
 
@@ -137,6 +148,7 @@ class GenerateImageMetadataCommand extends Command
         $this->addOption(self::OPTION_SLEEP, null, InputOption::VALUE_OPTIONAL, 'Seconds to sleep between queue batches.', 0);
         $this->addOption(self::OPTION_STALE_AFTER, null, InputOption::VALUE_OPTIONAL, 'Release processing locks older than this many minutes before claiming. Use 0 to leave them untouched.', 0);
         $this->addOption(self::OPTION_MAX_ATTEMPTS, null, InputOption::VALUE_OPTIONAL, 'Do not claim pending rows that have reached this attempt count. Use 0 for unlimited attempts.', 0);
+        $this->addOption(self::OPTION_SKIP_CACHE_FLUSH, null, InputOption::VALUE_NONE, 'Skip cache clean/flush/invalidation calls while processing queue rows. Use with --from-queue for faster bulk generation, then flush cache once after the run if needed.');
     }
 
     /**
@@ -158,9 +170,16 @@ class GenerateImageMetadataCommand extends Command
         $force = (bool) $input->getOption(self::OPTION_FORCE);
         $dryRun = (bool) $input->getOption(self::OPTION_DRY_RUN);
         $debugLogger = $this->getImageAnalyzerDebugLogger($output);
+        $fromQueue = (bool) $input->getOption(self::OPTION_FROM_QUEUE);
+        $skipCacheFlush = (bool) $input->getOption(self::OPTION_SKIP_CACHE_FLUSH);
 
-        if ((bool) $input->getOption(self::OPTION_FROM_QUEUE)) {
-            return $this->executeFromQueue($input, $output, $force, $dryRun);
+        if ($fromQueue) {
+            return $this->executeFromQueue($input, $output, $force, $dryRun, $skipCacheFlush);
+        }
+
+        if ($skipCacheFlush) {
+            $output->writeln('<error>The --skip-cache-flush option is only supported with --from-queue.</error>');
+            return Command::FAILURE;
         }
 
         $productIds = $this->normalizeArrayOption($input->getOption(self::OPTION_PRODUCT_ID));
@@ -233,9 +252,32 @@ class GenerateImageMetadataCommand extends Command
      * @param OutputInterface $output
      * @param bool $force
      * @param bool $dryRun
+     * @param bool $skipCacheFlush
      * @return int
      */
-    private function executeFromQueue(InputInterface $input, OutputInterface $output, bool $force, bool $dryRun): int
+    private function executeFromQueue(InputInterface $input, OutputInterface $output, bool $force, bool $dryRun, bool $skipCacheFlush): int
+    {
+        if (!$skipCacheFlush) {
+            return $this->processQueue($input, $output, $force, $dryRun);
+        }
+
+        $output->writeln('<comment>Skipping cache clean/flush/invalidation calls during queue processing.</comment>');
+
+        return $this->cacheFlushSkipper->run(function () use ($input, $output, $force, $dryRun): int {
+            return $this->processQueue($input, $output, $force, $dryRun);
+        });
+    }
+
+    /**
+     * Process queued rows using atomic claims, or preview rows in dry-run mode.
+     *
+     * @param InputInterface $input
+     * @param OutputInterface $output
+     * @param bool $force
+     * @param bool $dryRun
+     * @return int
+     */
+    private function processQueue(InputInterface $input, OutputInterface $output, bool $force, bool $dryRun): int
     {
         $batchSize = max(1, (int) $input->getOption(self::OPTION_BATCH_SIZE));
         $worker = trim((string) $input->getOption(self::OPTION_WORKER));
