@@ -224,9 +224,8 @@ class GenerateImageMetadataCommand extends Command
                 }
 
                 if (!$dryRun) {
-                    $this->productRepository->save($product);
-                    $this->persistScalarChanges((int) $product->getId(), $changes);
-                    $this->assertScalarChangesPersisted((int) $product->getId(), $changes);
+                    $this->persistAttributeChanges($product, $changes);
+                    $this->assertAttributeChangesPersisted($product, $changes);
                 }
 
                 $updated++;
@@ -497,9 +496,8 @@ class GenerateImageMetadataCommand extends Command
             }
 
             if (!$dryRun) {
-                $this->productRepository->save($product);
-                $this->persistScalarChanges($productId, $changes);
-                $this->assertScalarChangesPersisted($productId, $changes);
+                $this->persistAttributeChanges($product, $changes);
+                $this->assertAttributeChangesPersisted($product, $changes);
                 $this->assertQueueLeaseUpdated(
                     $this->queueManager->markDone($queueId, array_keys($changes), $lockedBy),
                     $queueId
@@ -531,70 +529,102 @@ class GenerateImageMetadataCommand extends Command
     }
 
     /**
-     * Persist generated scalar attributes at admin/default scope after product save.
+     * Persist generated attributes at admin/default scope without a full product save.
      *
-     * @param int $productId
+     * A repository save processes media gallery entries and can delete existing image
+     * rows when a CLI-loaded product does not carry a complete media payload. The
+     * metadata generator only updates EAV attributes, so save those values directly.
+     *
+     * @param ProductInterface $product
      * @param array<string, mixed> $changes
      * @return void
      */
-    private function persistScalarChanges(int $productId, array $changes): void
+    private function persistAttributeChanges(ProductInterface $product, array $changes): void
     {
-        $attributes = $this->getScalarChanges($changes);
+        $attributes = $this->getAttributeUpdateValues($product, $changes);
         if (empty($attributes)) {
             return;
         }
 
-        $this->productAction->updateAttributes([$productId], $attributes, 0);
+        $this->productAction->updateAttributes([(int) $product->getId()], $attributes, 0);
     }
 
     /**
-     * Fail loudly if scalar metadata was reported changed but did not persist.
+     * Fail loudly if generated metadata was reported changed but did not persist.
      *
-     * @param int $productId
+     * @param ProductInterface $product
      * @param array<string, mixed> $changes
      * @return void
      * @throws LocalizedException
      */
-    private function assertScalarChangesPersisted(int $productId, array $changes): void
+    private function assertAttributeChangesPersisted(ProductInterface $product, array $changes): void
     {
-        $attributes = $this->getScalarChanges($changes);
+        $attributes = $this->getAttributeUpdateValues($product, $changes);
         if (empty($attributes)) {
             return;
         }
 
+        $productId = (int) $product->getId();
         $savedProduct = $this->productRepository->getById($productId, false, 0, true);
         $missing = [];
         foreach ($attributes as $attributeCode => $expectedValue) {
-            $actualValue = trim((string) $savedProduct->getData($attributeCode));
-            if ($actualValue !== trim((string) $expectedValue)) {
+            $actualValue = $this->normalizeAttributeUpdateValue($savedProduct->getData($attributeCode));
+            if ($actualValue !== $expectedValue) {
                 $missing[] = $attributeCode;
             }
         }
 
         if (!empty($missing)) {
             throw new LocalizedException(__(
-                'Generated scalar metadata did not persist for: %1',
+                'Generated metadata did not persist for: %1',
                 implode(', ', $missing)
             ));
         }
     }
 
     /**
-     * Return scalar changed values suitable for default-scope EAV persistence.
+     * Return changed product data values suitable for default-scope EAV persistence.
      *
+     * @param ProductInterface $product
      * @param array<string, mixed> $changes
      * @return array<string, string>
      */
-    private function getScalarChanges(array $changes): array
+    private function getAttributeUpdateValues(ProductInterface $product, array $changes): array
     {
         $attributes = [];
-        foreach ($changes as $attributeCode => $value) {
-            if (is_scalar($value) && trim((string) $value) !== '') {
-                $attributes[$attributeCode] = (string) $value;
+        foreach (array_keys($changes) as $attributeCode) {
+            if (!$product->hasData($attributeCode)) {
+                continue;
+            }
+
+            $value = $this->normalizeAttributeUpdateValue($product->getData($attributeCode));
+            if ($value !== '') {
+                $attributes[$attributeCode] = $value;
             }
         }
 
         return $attributes;
+    }
+
+    /**
+     * Normalize an attribute value for ProductAction persistence and verification.
+     *
+     * @param mixed $value
+     * @return string
+     */
+    private function normalizeAttributeUpdateValue($value): string
+    {
+        if (is_array($value)) {
+            return implode(',', array_values(array_filter(array_map(static function ($part) {
+                return trim((string) $part);
+            }, $value), 'strlen')));
+        }
+
+        if (!is_scalar($value)) {
+            return '';
+        }
+
+        return trim((string) $value);
     }
 
     /**
